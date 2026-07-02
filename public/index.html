@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Web Worker Shell</title>
+    <link rel="stylesheet" href="/vendor/xterm/css/xterm.css">
+    <link rel="stylesheet" href="/app.css">
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <div>
+            <strong>Web Worker</strong>
+            <span id="rootLine">Locked</span>
+          </div>
+          <button id="tokenButton" class="quietButton" title="Change token" aria-label="Change token">Token</button>
+        </div>
+
+        <section class="block">
+          <div class="bar">
+            <span>Shells <b id="sessionCount">0</b></span>
+            <button id="newSession" class="smallButton" title="New shell" aria-label="New shell">New</button>
+          </div>
+          <div id="sessions" class="list"></div>
+        </section>
+
+        <section class="block fileBlock">
+          <div class="bar">
+            <span>Files</span>
+            <div class="fileActions">
+              <button id="refreshFiles" class="smallButton" title="Refresh files" aria-label="Refresh files">Refresh</button>
+              <label class="upload" title="Upload file">
+                Upload
+                <input id="uploadFile" type="file">
+              </label>
+            </div>
+          </div>
+          <div id="filePath" class="path">/</div>
+          <div id="fileTree" class="tree"></div>
+        </section>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <div id="sessionTitle" class="title">No shell</div>
+            <div id="status" class="status">Enter token to connect</div>
+          </div>
+          <div class="topActions">
+            <select id="shortcutSelect" class="shortcutSelect" title="Send shortcut" aria-label="Send shortcut">
+              <option value="">Keys</option>
+              <option value="ctrl-c">CTRL+C</option>
+              <option value="ctrl-b">CTRL+B</option>
+              <option value="ctrl-z">CTRL+Z</option>
+            </select>
+            <button id="renameSession" class="smallButton" title="Rename current shell" aria-label="Rename current shell">Name</button>
+            <button id="closeSession" class="danger" title="Close current shell" aria-label="Close current shell">Close</button>
+          </div>
+        </header>
+        <div class="terminalFrame">
+          <div id="terminal" class="terminal"></div>
+        </div>
+      </main>
+    </div>
+
+    <dialog id="authDialog">
+      <form method="dialog" class="authForm">
+        <h1>Access token</h1>
+        <p>The server prints this token when it starts.</p>
+        <label for="tokenInput">Token</label>
+        <input id="tokenInput" type="password" autocomplete="off" autofocus>
+        <menu>
+          <button value="cancel">Cancel</button>
+          <button id="saveToken" value="default">Connect</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/vendor/xterm/lib/xterm.js"></script>
+    <script src="/vendor/xterm-fit/addon-fit.js"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>
