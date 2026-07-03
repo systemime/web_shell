@@ -15,7 +15,9 @@ test('path guard rejects traversal and symlink escape', async () => {
 
   const guard = makePathGuard(root);
   assert.equal((await guard.existing('ok.txt')).rel, 'ok.txt');
+  assert.equal((await guard.existing(path.join(root, 'ok.txt'))).rel, 'ok.txt');
   await assert.rejects(() => guard.existing('../etc/passwd'), HttpError);
+  await assert.rejects(() => guard.existing(path.join(outside, 'ccc.png')), (err) => err instanceof HttpError && err.status === 403);
   await assert.rejects(() => guard.existing('outside'), HttpError);
 
   await fsp.rm(root, { recursive: true, force: true });

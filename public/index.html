@@ -15,7 +15,6 @@
             <strong>Web Worker</strong>
             <span id="rootLine">Locked</span>
           </div>
-          <button id="tokenButton" class="quietButton" title="Change token" aria-label="Change token">Token</button>
         </div>
 
         <section class="block">
@@ -46,7 +45,7 @@
         <header class="topbar">
           <div>
             <div id="sessionTitle" class="title">No shell</div>
-            <div id="status" class="status">Enter token to connect</div>
+            <div id="status" class="status">Connecting...</div>
           </div>
           <div class="topActions">
             <select id="shortcutSelect" class="shortcutSelect" title="Send shortcut" aria-label="Send shortcut">
@@ -59,24 +58,23 @@
             <button id="closeSession" class="danger" title="Close current shell" aria-label="Close current shell">Close</button>
           </div>
         </header>
+        <div id="mobileKeys" class="mobileKeys" aria-label="Terminal controls">
+          <button type="button" data-key="esc">Esc</button>
+          <button type="button" data-key="tab">Tab</button>
+          <button type="button" data-key="up">Up</button>
+          <button type="button" data-key="down">Down</button>
+          <button type="button" data-key="left">Left</button>
+          <button type="button" data-key="right">Right</button>
+          <button type="button" data-control="page-up">PgUp</button>
+          <button type="button" data-control="page-down">PgDn</button>
+          <button type="button" data-key="ctrl-c">C-c</button>
+          <button type="button" data-key="ctrl-d">EOF</button>
+        </div>
         <div class="terminalFrame">
           <div id="terminal" class="terminal"></div>
         </div>
       </main>
     </div>
-
-    <dialog id="authDialog">
-      <form method="dialog" class="authForm">
-        <h1>Access token</h1>
-        <p>The server prints this token when it starts.</p>
-        <label for="tokenInput">Token</label>
-        <input id="tokenInput" type="password" autocomplete="off" autofocus>
-        <menu>
-          <button value="cancel">Cancel</button>
-          <button id="saveToken" value="default">Connect</button>
-        </menu>
-      </form>
-    </dialog>
 
     <script src="/socket.io/socket.io.js"></script>
     <script src="/vendor/xterm/lib/xterm.js"></script>

@@ -2,7 +2,9 @@ node_modules/
 .env
 npm-debug.log*
 session-titles.json
+.web-worker-tmp/
 .gitnexus/
 test-results/
 openresty/auth/
+openresty/certs/
 openresty/logs/

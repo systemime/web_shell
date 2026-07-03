@@ -18,20 +18,18 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HOST = process.env.HOST || '127.0.0.1';
 const PORT = Number(process.env.PORT || 8787);
 const ROOT = process.env.WEB_WORKER_ROOT || process.cwd();
-const TOKEN = process.env.WEB_WORKER_TOKEN || crypto.randomBytes(24).toString('base64url');
 const MAX_UPLOAD = Number(process.env.WEB_WORKER_MAX_UPLOAD_MB || 100) * 1024 * 1024;
 const HISTORY_LIMIT = 1024 * 1024;
 const TMUX_SOCKET = process.env.WEB_WORKER_TMUX_SOCKET || 'web-worker-shell';
 const TMUX_PREFIX = 'webworker_';
 const TITLE_FILE = path.join(__dirname, 'session-titles.json');
 const guard = makePathGuard(ROOT);
+const WORK_TMP = path.join(guard.root, '.web-worker-tmp');
 const sessions = new Map();
 let sessionTitles = {};
 
-if (!process.env.WEB_WORKER_TOKEN && !['127.0.0.1', '::1', 'localhost'].includes(HOST)) {
-  console.error('Refusing remote bind without WEB_WORKER_TOKEN.');
-  process.exit(1);
-}
+fs.mkdirSync(WORK_TMP, { recursive: true, mode: 0o700 });
+Object.assign(process.env, { TMPDIR: WORK_TMP, TMP: WORK_TMP, TEMP: WORK_TMP });
 
 const app = express();
 const server = http.createServer(app);
@@ -54,21 +52,6 @@ app.use(express.static(path.join(__dirname, 'public'), {
     res.setHeader('Cache-Control', 'no-store');
   }
 }));
-
-function validToken(value) {
-  if (typeof value !== 'string' || !value) return false;
-  const got = Buffer.from(value);
-  const want = Buffer.from(TOKEN);
-  return got.length === want.length && crypto.timingSafeEqual(got, want);
-}
-
-function auth(req, res, next) {
-  const header = req.get('authorization') || '';
-  const bearer = header.match(/^Bearer\s+(.+)$/i)?.[1];
-  const token = bearer || req.get('x-web-worker-token');
-  if (!validToken(token)) return next(new HttpError(401, 'Unauthorized'));
-  next();
-}
 
 function asyncRoute(fn) {
   return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
@@ -151,8 +134,19 @@ function tmuxHasSession(id) {
 }
 
 function setTmuxDefaults() {
-  tryTmux(['set-option', '-g', 'mouse', 'on']);
+  tryTmux(['set-option', '-g', 'mouse', 'off']);
   tryTmux(['set-option', '-g', 'history-limit', '8000']);
+}
+
+function sendTmuxControl(id, action) {
+  const target = tmuxName(id);
+  if (action === 'page-up') runTmux(['copy-mode', '-u', '-t', target]);
+  if (action === 'page-down') tryTmux(['send-keys', '-t', target, '-X', 'page-down']);
+  if (action === 'scroll-up') {
+    runTmux(['copy-mode', '-e', '-t', target]);
+    tryTmux(['send-keys', '-t', target, '-X', '-N', '5', 'scroll-up']);
+  }
+  if (action === 'scroll-down') tryTmux(['send-keys', '-t', target, '-X', '-N', '5', 'scroll-down']);
 }
 
 function captureSessionHistory(id) {
@@ -256,7 +250,7 @@ function attachSession(socket, session, size = {}) {
     cols: Number(size.cols) || 100,
     rows: Number(size.rows) || 30,
     cwd: guard.root,
-    env: { ...process.env, TERM: 'xterm-256color' }
+    env: { ...process.env, TERM: 'xterm-256color', TMPDIR: WORK_TMP, TMP: WORK_TMP, TEMP: WORK_TMP }
   });
 
   session.term = term;
@@ -291,11 +285,11 @@ function attachSession(socket, session, size = {}) {
 
 loadTitles();
 
-app.get('/api/me', auth, (req, res) => {
+app.get('/api/me', (req, res) => {
   res.json({ root: guard.root, maxUpload: MAX_UPLOAD, sessions: listSessions() });
 });
 
-app.get('/api/tree', auth, asyncRoute(async (req, res) => {
+app.get('/api/tree', asyncRoute(async (req, res) => {
   const dir = await guard.existing(req.query.path || '.');
   const stat = await fsp.stat(dir.real);
   if (!stat.isDirectory()) throw new HttpError(400, 'Not a directory');
@@ -318,7 +312,7 @@ app.get('/api/tree', auth, asyncRoute(async (req, res) => {
   res.json({ path: dir.rel, entries: rows });
 }));
 
-app.get('/api/file', auth, asyncRoute(async (req, res) => {
+app.get('/api/file', asyncRoute(async (req, res) => {
   const file = await guard.existing(req.query.path || '');
   const stat = await fsp.stat(file.real);
   if (!stat.isFile()) throw new HttpError(400, 'Not a file');
@@ -339,7 +333,7 @@ class LimitUpload extends Transform {
   }
 }
 
-app.put('/api/file', auth, asyncRoute(async (req, res) => {
+app.put('/api/file', asyncRoute(async (req, res) => {
   const target = await guard.writable(req.query.path || '');
   const parent = path.dirname(target.full);
   const tmp = path.join(parent, `.upload-${process.pid}-${Date.now()}-${crypto.randomUUID()}.tmp`);
@@ -355,11 +349,6 @@ app.put('/api/file', auth, asyncRoute(async (req, res) => {
     throw err;
   }
 }));
-
-io.use((socket, next) => {
-  if (validToken(socket.handshake.auth?.token)) next();
-  else next(new Error('unauthorized'));
-});
 
 io.on('connection', (socket) => {
   socket.emit('sessions', listSessions());
@@ -425,6 +414,12 @@ io.on('connection', (socket) => {
     if (session && session.viewerSocket === socket.id) session.term?.resize(Number(cols) || 100, Number(rows) || 30);
   });
 
+  socket.on('terminal:control', (payload = {}) => {
+    const { id, action } = payload || {};
+    const session = sessions.get(id);
+    if (session && session.viewerSocket === socket.id) sendTmuxControl(id, action);
+  });
+
   socket.on('disconnect', () => {
     for (const session of sessions.values()) {
       if (session.viewerSocket === socket.id) detachViewer(session, false);
@@ -443,6 +438,4 @@ server.listen(PORT, HOST, () => {
   const url = `http://${HOST}:${PORT}/`;
   console.log(`Web worker shell: ${url}`);
   console.log(`Workspace root: ${guard.root}`);
-  console.log(`Token: ${TOKEN}`);
-  if (!process.env.WEB_WORKER_TOKEN) console.log(`Open: ${url}?token=${encodeURIComponent(TOKEN)}`);
 });

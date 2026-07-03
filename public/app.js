@@ -6,10 +6,7 @@ if (pageUrl.username || pageUrl.password) {
   throw new Error('Redirecting to credential-free URL');
 }
 
-const tokenKey = 'web-worker-token';
-const authDialog = document.querySelector('#authDialog');
-const tokenInput = document.querySelector('#tokenInput');
-const tokenButton = document.querySelector('#tokenButton');
+const sessionKey = 'web-worker-session';
 const rootLine = document.querySelector('#rootLine');
 const statusEl = document.querySelector('#status');
 const sessionsEl = document.querySelector('#sessions');
@@ -25,15 +22,10 @@ const refreshFiles = document.querySelector('#refreshFiles');
 const uploadFile = document.querySelector('#uploadFile');
 const terminalFrame = document.querySelector('.terminalFrame');
 const terminalEl = document.querySelector('#terminal');
+const mobileKeys = document.querySelector('#mobileKeys');
 
-const urlToken = pageUrl.searchParams.get('token');
-if (urlToken) {
-  localStorage.setItem(tokenKey, urlToken);
-  history.replaceState(null, '', location.pathname);
-}
-
-let token = localStorage.getItem(tokenKey) || '';
 let activeSession = '';
+let pendingSession = '';
 let currentDir = '';
 let shellDir = null;
 let treeRequest = 0;
@@ -57,12 +49,30 @@ const term = new Terminal({
 const fit = new FitAddon.FitAddon();
 term.loadAddon(fit);
 term.open(terminalEl);
+term.attachCustomWheelEventHandler((event) => {
+  if (event.ctrlKey || event.metaKey) return false;
+  if (event.deltaY === 0 || event.shiftKey) return true;
+  event.preventDefault();
+  if (term.buffer.active.type === 'normal') term.scrollLines(event.deltaY > 0 ? 5 : -5);
+  else sendTerminalControl(event.deltaY > 0 ? 'scroll-down' : 'scroll-up');
+  return false;
+});
 
-const socket = io({ autoConnect: false, auth: { token } });
+const socket = io({ autoConnect: false });
 const shortcuts = {
   'ctrl-c': '\x03',
   'ctrl-b': '\x02',
   'ctrl-z': '\x1A'
+};
+const terminalKeys = {
+  esc: '\x1B',
+  tab: '\t',
+  up: '\x1B[A',
+  down: '\x1B[B',
+  right: '\x1B[C',
+  left: '\x1B[D',
+  'ctrl-c': '\x03',
+  'ctrl-d': '\x04'
 };
 
 function skipClickWhileSelecting() {
@@ -104,17 +114,14 @@ function setStatus(text) {
   statusEl.textContent = text;
 }
 
-function headers() {
-  return { 'X-Web-Worker-Token': token };
+function rememberSession(id) {
+  if (id) localStorage.setItem(sessionKey, id);
+  else localStorage.removeItem(sessionKey);
 }
 
 async function api(url, options = {}) {
   const endpoint = url.startsWith('/') ? new URL(url, location.origin) : url;
-  const res = await fetch(endpoint, { ...options, headers: { ...headers(), ...(options.headers || {}) } });
-  if (res.status === 401) {
-    askToken();
-    throw new Error('Unauthorized');
-  }
+  const res = await fetch(endpoint, options);
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
   return res;
 }
@@ -137,14 +144,31 @@ function writeTerminal(data, fast = false) {
   term.write(data);
 }
 
+function sendTerminalInput(data) {
+  if (!activeSession || !socket.connected) {
+    setStatus('No active shell.');
+    return false;
+  }
+  socket.emit('terminal:input', { id: activeSession, data });
+  return true;
+}
+
 function sendShortcut(name) {
   const data = shortcuts[name];
   if (!data) return;
+  if (!sendTerminalInput(data)) {
+    setStatus('No active shell.');
+    return;
+  }
+  focusTerminal(true);
+}
+
+function sendTerminalControl(action) {
   if (!activeSession || !socket.connected) {
     setStatus('No active shell.');
     return;
   }
-  socket.emit('terminal:input', { id: activeSession, data });
+  socket.emit('terminal:control', { id: activeSession, action });
   focusTerminal(true);
 }
 
@@ -154,7 +178,7 @@ function renderSessions(items) {
   if (!items.length) frag.append(emptyState('No shells yet.'));
   for (const item of items) {
     const row = clickableRow(() => attachSession(item.id));
-    if (item.id === activeSession) row.classList.add('active');
+    if (item.id === activeSession || item.id === pendingSession) row.classList.add('active');
     row.innerHTML = `<span>$</span><span class="name"></span><span class="meta"></span>`;
     row.querySelector('.name').textContent = item.title;
     row.querySelector('.meta').textContent = new Date(item.lastActive).toLocaleTimeString();
@@ -165,10 +189,17 @@ function renderSessions(items) {
 }
 
 function attachSession(id) {
+  if (!id || pendingSession === id) return;
+  pendingSession = id;
   fit.fit();
   socket.emit('session:attach', { id, size: { cols: term.cols, rows: term.rows } }, (reply) => {
-    if (reply?.error) return setStatus(reply.error);
+    pendingSession = '';
+    if (reply?.error) {
+      if (localStorage.getItem(sessionKey) === id) rememberSession('');
+      return setStatus(reply.error);
+    }
     activeSession = id;
+    rememberSession(id);
     shellDir = null;
     term.reset();
     sessionTitle.textContent = reply.session.title;
@@ -185,6 +216,7 @@ function createSession() {
   fit.fit();
   socket.emit('session:create', { cols: term.cols, rows: term.rows }, (reply) => {
     activeSession = reply.session.id;
+    rememberSession(activeSession);
     shellDir = null;
     sessionTitle.textContent = reply.session.title;
     term.reset();
@@ -194,14 +226,7 @@ function createSession() {
   });
 }
 
-function askToken() {
-  tokenInput.value = token;
-  authDialog.showModal();
-}
-
 async function connect() {
-  if (!token) return askToken();
-  socket.auth = { token };
   socket.connect();
   try {
     const me = await (await api('/api/me')).json();
@@ -299,12 +324,25 @@ async function downloadFile(path) {
   setStatus(`Downloaded ${a.download}.`);
 }
 
+socket.io.on('reconnect_attempt', () => setStatus('Reconnecting...'));
 socket.on('connect', () => setStatus('Connected.'));
-socket.on('connect_error', () => askToken());
+socket.on('disconnect', () => {
+  pendingSession = '';
+  if (!activeSession) return;
+  activeSession = '';
+  sessionTitle.textContent = 'Reconnecting...';
+  setStatus('Disconnected. Reconnecting...');
+});
+socket.on('connect_error', (err) => {
+  setStatus('Connection failed. Retrying...');
+});
 socket.on('sessions', (items) => {
   renderSessions(items);
-  if (!activeSession && items[0]) attachSession(items[0].id);
-  if (!items.length && socket.connected) createSession();
+  if (activeSession || pendingSession) return;
+  const remembered = localStorage.getItem(sessionKey);
+  const target = items.find((item) => item.id === remembered) || items[0];
+  if (target) attachSession(target.id);
+  else if (socket.connected) createSession();
 });
 socket.on('terminal:data', ({ id, data }) => {
   if (id === activeSession) writeTerminal(data);
@@ -315,6 +353,7 @@ socket.on('terminal:cwd', ({ id, path, outside }) => {
 socket.on('terminal:exit', ({ id }) => {
   if (id === activeSession) {
     activeSession = '';
+    rememberSession('');
     shellDir = null;
     sessionTitle.textContent = 'No shell';
     setStatus('Shell closed.');
@@ -323,6 +362,7 @@ socket.on('terminal:exit', ({ id }) => {
 socket.on('terminal:detached', ({ id }) => {
   if (id !== activeSession) return;
   activeSession = '';
+  rememberSession('');
   shellDir = null;
   sessionsEl.querySelectorAll('.active').forEach((item) => item.classList.remove('active'));
   sessionTitle.textContent = 'Detached';
@@ -335,6 +375,14 @@ term.onData((data) => {
 });
 
 terminalFrame.addEventListener('pointerdown', () => focusTerminal(true));
+mobileKeys.onclick = (event) => {
+  const button = event.target.closest('button');
+  if (!button) return;
+  const key = button.dataset.key;
+  const control = button.dataset.control;
+  if (key && terminalKeys[key] && sendTerminalInput(terminalKeys[key])) focusTerminal(true);
+  if (control) sendTerminalControl(control);
+};
 
 newSession.onclick = createSession;
 closeSession.onclick = () => activeSession && socket.emit('session:close', activeSession);
@@ -349,7 +397,6 @@ renameSession.onclick = () => {
   });
 };
 refreshFiles.onclick = () => loadTree(currentDir);
-tokenButton.onclick = askToken;
 shortcutSelect.onchange = () => {
   sendShortcut(shortcutSelect.value);
   shortcutSelect.value = '';
@@ -375,13 +422,6 @@ uploadFile.onchange = async () => {
     uploadFile.value = '';
   }
 };
-
-authDialog.addEventListener('close', () => {
-  if (authDialog.returnValue !== 'default') return;
-  token = tokenInput.value.trim();
-  localStorage.setItem(tokenKey, token);
-  connect();
-});
 
 fitTerminal();
 connect();

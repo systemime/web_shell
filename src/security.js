@@ -18,8 +18,7 @@ export function makePathGuard(rootDir) {
   const root = fs.realpathSync(path.resolve(rootDir));
 
   function lexical(userPath = '.') {
-    const clean = String(userPath || '.').replace(/^[/\\]+/, '');
-    const full = path.resolve(root, clean);
+    const full = path.resolve(root, String(userPath || '.'));
     if (!isInside(root, full)) throw new HttpError(403, 'Path escapes workspace root');
     return full;
   }
