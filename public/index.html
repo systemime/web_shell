@@ -9,12 +9,14 @@
   </head>
   <body>
     <div class="app">
+      <input id="sidebarToggle" class="drawerToggle" type="checkbox" aria-hidden="true">
       <aside class="sidebar">
         <div class="brand">
           <div>
             <strong>Web Worker</strong>
             <span id="rootLine">Locked</span>
           </div>
+          <label for="sidebarToggle" class="drawerClose" aria-label="Close panel">Close</label>
         </div>
 
         <section class="block">
@@ -44,6 +46,9 @@
       <main class="main">
         <header class="topbar">
           <div>
+            <select id="sessionSelect" class="sessionSelect" title="Switch shell" aria-label="Switch shell">
+              <option value="">Shells</option>
+            </select>
             <div id="sessionTitle" class="title">No shell</div>
             <div id="status" class="status">Connecting...</div>
           </div>
@@ -54,6 +59,7 @@
               <option value="ctrl-b">CTRL+B</option>
               <option value="ctrl-z">CTRL+Z</option>
             </select>
+            <label for="sidebarToggle" class="drawerButton" aria-label="Open files">Files</label>
             <button id="renameSession" class="smallButton" title="Rename current shell" aria-label="Rename current shell">Name</button>
             <button id="closeSession" class="danger" title="Close current shell" aria-label="Close current shell">Close</button>
           </div>

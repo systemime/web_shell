@@ -12,6 +12,7 @@ const statusEl = document.querySelector('#status');
 const sessionsEl = document.querySelector('#sessions');
 const sessionCount = document.querySelector('#sessionCount');
 const sessionTitle = document.querySelector('#sessionTitle');
+const sessionSelect = document.querySelector('#sessionSelect');
 const newSession = document.querySelector('#newSession');
 const closeSession = document.querySelector('#closeSession');
 const renameSession = document.querySelector('#renameSession');
@@ -174,6 +175,9 @@ function sendTerminalControl(action) {
 
 function renderSessions(items) {
   sessionCount.textContent = items.length;
+  const current = activeSession || pendingSession || '';
+  sessionSelect.replaceChildren(new Option('Shells', ''), ...items.map((item) => new Option(item.title, item.id)));
+  sessionSelect.value = items.some((item) => item.id === current) ? current : '';
   const frag = document.createDocumentFragment();
   if (!items.length) frag.append(emptyState('No shells yet.'));
   for (const item of items) {
@@ -200,6 +204,7 @@ function attachSession(id) {
     }
     activeSession = id;
     rememberSession(id);
+    sessionSelect.value = id;
     shellDir = null;
     term.reset();
     sessionTitle.textContent = reply.session.title;
@@ -217,6 +222,7 @@ function createSession() {
   socket.emit('session:create', { cols: term.cols, rows: term.rows }, (reply) => {
     activeSession = reply.session.id;
     rememberSession(activeSession);
+    sessionSelect.value = activeSession;
     shellDir = null;
     sessionTitle.textContent = reply.session.title;
     term.reset();
@@ -400,6 +406,9 @@ refreshFiles.onclick = () => loadTree(currentDir);
 shortcutSelect.onchange = () => {
   sendShortcut(shortcutSelect.value);
   shortcutSelect.value = '';
+};
+sessionSelect.onchange = () => {
+  if (sessionSelect.value) attachSession(sessionSelect.value);
 };
 if (window.ResizeObserver) {
   terminalObserver = new ResizeObserver(fitTerminal);
