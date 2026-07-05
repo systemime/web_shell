@@ -247,25 +247,24 @@ function renderSessions(items) {
 function attachSession(id) {
   if (!id || pendingSession === id) return;
   pendingSession = id;
+  activeSession = id;
+  shellDir = null;
+  term.reset();
   fit.fit();
   socket.emit('session:attach', { id, size: { cols: term.cols, rows: term.rows } }, (reply) => {
     pendingSession = '';
     if (reply?.error) {
+      if (activeSession === id) activeSession = '';
       if (localStorage.getItem(sessionKey) === id) rememberSession('');
       return setStatus(reply.error);
     }
     activeSession = id;
     rememberSession(id);
     sessionSelect.value = id;
-    shellDir = null;
-    term.reset();
     sessionTitle.textContent = reply.session.title;
     setStatus('Attached. Closing this tab keeps the shell running.');
     fitTerminal(true);
-    requestAnimationFrame(() => {
-      writeTerminal((reply.history || []).join(''), true);
-      focusTerminal();
-    });
+    focusTerminal();
   });
 }
 

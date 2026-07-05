@@ -740,11 +740,6 @@ func (a *appState) sendTmuxControl(id, action string) {
 	}
 }
 
-func (a *appState) captureSessionHistory(id string) string {
-	out := a.tryTmux("capture-pane", "-p", "-S", "-8000", "-E", "-", "-t", tmuxName(id))
-	return strings.ReplaceAll(regexp.MustCompile(`(?:\n[ \t]*)+$`).ReplaceAllString(out, ""), "\n", "\r\n")
-}
-
 type cwdInfo struct {
 	Path    string `json:"path"`
 	Outside bool   `json:"outside"`
@@ -944,16 +939,11 @@ func (c *client) handle(msg inbound) {
 			c.reply(msg.Req, map[string]any{"error": "Session not found"})
 			return
 		}
-		history := c.app.captureSessionHistory(p.ID)
 		if err := c.app.attachSession(c, s, p.Size.Cols, p.Size.Rows); err != nil {
 			c.reply(msg.Req, map[string]any{"error": err.Error()})
 			return
 		}
-		hist := []string{}
-		if history != "" {
-			hist = []string{history}
-		}
-		c.reply(msg.Req, map[string]any{"session": sessionInfo{ID: s.ID, Title: s.Title, CreatedAt: s.CreatedAt, LastActive: time.Now().UnixMilli()}, "history": hist})
+		c.reply(msg.Req, map[string]any{"session": sessionInfo{ID: s.ID, Title: s.Title, CreatedAt: s.CreatedAt, LastActive: time.Now().UnixMilli()}})
 	case "session:close":
 		var id string
 		_ = json.Unmarshal(msg.Data, &id)
