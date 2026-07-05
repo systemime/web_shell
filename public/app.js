@@ -142,7 +142,7 @@ function fitTerminal(force = false) {
 }
 
 function writeTerminal(data, fast = false) {
-  term.write(data);
+  term.write(data, () => term.scrollToBottom());
 }
 
 function sendTerminalInput(data) {
