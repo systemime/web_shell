@@ -103,6 +103,17 @@ WEB_WORKER_TMUX_SOCKET=web-worker-shell
 - 改 `WEB_WORKER_ROOT` 后，运行服务的用户必须有这个目录的读写权限。
 - 改 `WEB_WORKER_MAX_UPLOAD_MB` 后，反向代理的上传限制也要一起改，比如 Nginx/OpenResty 的 `client_max_body_size`。
 
+## Go 单二进制运行
+
+当前分支支持构建一个内嵌 Web UI 的 Go 二进制，运行时只需要系统已安装 `tmux`：
+
+```bash
+go build -o webshell .
+WEB_WORKER_ROOT=/opt/project/web_worker ./webshell
+```
+
+默认监听 `127.0.0.1:8787`，环境变量仍兼容：`HOST`、`PORT`、`WEB_WORKER_ROOT`、`WEB_WORKER_MAX_UPLOAD_MB`、`WEB_WORKER_TMUX_SOCKET`。
+
 ## 生产运行
 
 不要用 `npm start` 在 SSH 里长期挂着。正式部署用 systemd、PM2 或同类进程管理工具。

@@ -59,7 +59,60 @@ term.attachCustomWheelEventHandler((event) => {
   return false;
 });
 
-const socket = io({ autoConnect: false });
+const socket = (() => {
+  let ws;
+  let connected = false;
+  let seq = 0;
+  let reconnectTimer = 0;
+  const handlers = new Map();
+  const replies = new Map();
+
+  function send(type, data, cb) {
+    if (!connected) return false;
+    const req = cb ? String(++seq) : '';
+    if (cb) replies.set(req, cb);
+    ws.send(JSON.stringify({ type, req, data }));
+    return true;
+  }
+
+  function fire(type, data) {
+    for (const fn of handlers.get(type) || []) fn(data);
+  }
+
+  function connect() {
+    clearTimeout(reconnectTimer);
+    ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+    ws.onopen = () => {
+      connected = true;
+      fire('connect');
+    };
+    ws.onmessage = (event) => {
+      const msg = JSON.parse(event.data);
+      if (msg.type === 'reply') {
+        const cb = replies.get(msg.req);
+        replies.delete(msg.req);
+        if (cb) cb(msg.data);
+        return;
+      }
+      fire(msg.type, msg.data);
+    };
+    ws.onerror = () => { if (!connected) fire('connect_error'); };
+    ws.onclose = () => {
+      if (connected) fire('disconnect');
+      connected = false;
+      fire('reconnect_attempt');
+      reconnectTimer = setTimeout(connect, 1000);
+    };
+  }
+
+  return {
+    get connected() { return connected; },
+    connect,
+    emit: send,
+    on(type, fn) { handlers.set(type, [...(handlers.get(type) || []), fn]); },
+    onReconnectAttempt(fn) { handlers.set('reconnect_attempt', [...(handlers.get('reconnect_attempt') || []), fn]); }
+  };
+})();
 const shortcuts = {
   'ctrl-c': '\x03',
   'ctrl-b': '\x02',
@@ -150,8 +203,7 @@ function sendTerminalInput(data) {
     setStatus('No active shell.');
     return false;
   }
-  socket.emit('terminal:input', { id: activeSession, data });
-  return true;
+  return socket.emit('terminal:input', { id: activeSession, data });
 }
 
 function sendShortcut(name) {
@@ -330,7 +382,7 @@ async function downloadFile(path) {
   setStatus(`Downloaded ${a.download}.`);
 }
 
-socket.io.on('reconnect_attempt', () => setStatus('Reconnecting...'));
+socket.onReconnectAttempt(() => setStatus('Reconnecting...'));
 socket.on('connect', () => setStatus('Connected.'));
 socket.on('disconnect', () => {
   pendingSession = '';
