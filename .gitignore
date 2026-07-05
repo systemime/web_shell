@@ -10,3 +10,5 @@ openresty/certs/
 openresty/logs/
 
 webshell
+
+.claude/
