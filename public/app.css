@@ -343,7 +343,7 @@ button:focus-visible,
 .terminalFrame {
   flex: 1 1 auto;
   min-height: 0;
-  margin: clamp(12px, 1.3vw, 18px) clamp(12px, 1.3vw, 18px) 8px;
+  margin: clamp(12px, 1.3vw, 18px) clamp(12px, 1.3vw, 18px) 86px;
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -351,16 +351,25 @@ button:focus-visible,
   overflow: hidden;
 }
 
-.commandInput {
-  flex: 0 0 auto;
-  position: sticky;
+.commandDock {
+  position: fixed;
+  left: clamp(280px, 22vw, 340px);
+  right: 0;
   bottom: 0;
-  z-index: 1;
+  z-index: 30;
+  padding: 8px clamp(12px, 1.3vw, 18px) clamp(12px, 1.3vw, 18px);
+  border-top: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg), transparent 4%);
+  backdrop-filter: blur(8px);
+}
+
+.commandInput {
   display: block;
-  width: calc(100% - clamp(24px, 2.6vw, 36px));
+  width: 100%;
   min-height: 48px;
+  max-height: 35dvh;
   height: auto;
-  margin: 0 clamp(12px, 1.3vw, 18px) clamp(12px, 1.3vw, 18px);
+  margin: 0;
   padding: 9px 10px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -467,13 +476,13 @@ button:focus-visible,
   }
 
   .terminalFrame {
-    margin: 10px;
+    margin: 10px 10px 78px;
     padding: 8px;
   }
 
-  .commandInput {
-    width: calc(100% - 20px);
-    margin: 0 10px 10px;
+  .commandDock {
+    left: 0;
+    padding: 8px 10px 10px;
   }
 
   .tree {
@@ -561,16 +570,20 @@ button:focus-visible,
   }
 
   .terminalFrame {
-    margin: 0;
+    margin: 0 0 58px;
     padding: 4px 2px 2px 4px;
     border: 0;
     border-radius: 0;
   }
 
+  .commandDock {
+    left: 0;
+    padding: 0;
+    border-top: 1px solid var(--line);
+  }
+
   .commandInput {
-    width: 100%;
     min-height: 42px;
-    margin: 0;
     border-inline: 0;
     border-bottom: 0;
     border-radius: 0;
