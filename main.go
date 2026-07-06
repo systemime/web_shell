@@ -66,6 +66,7 @@ type session struct {
 	CwdStop      chan struct{}
 	CreatedAt    int64
 	LastActive   int64
+	MuteUntil    int64
 }
 
 type sessionInfo struct {
@@ -591,7 +592,7 @@ func randomID() (string, error) {
 	return hex.EncodeToString(b), err
 }
 
-func (a *appState) attachSession(c *client, s *session, cols, rows int) error {
+func (a *appState) attachSession(c *client, s *session, cols, rows int, quiet bool) error {
 	if !a.tmuxHasSession(s.ID) {
 		return errors.New("Session not found")
 	}
@@ -602,6 +603,30 @@ func (a *appState) attachSession(c *client, s *session, cols, rows int) error {
 	if rows <= 0 {
 		rows = 30
 	}
+
+	a.mu.Lock()
+	if s.Cmd != nil && s.PTY != nil {
+		old := s.Viewer
+		if s.CwdStop != nil {
+			close(s.CwdStop)
+		}
+		stop := make(chan struct{})
+		ptmx := s.PTY
+		s.Viewer = c
+		s.LastActive = time.Now().UnixMilli()
+		s.MuteUntil = 0
+		s.CwdStop = stop
+		s.CwdKey = ""
+		a.mu.Unlock()
+		_ = pty.Setsize(ptmx, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
+		if old != nil && old != c {
+			old.emit("terminal:detached", map[string]any{"id": s.ID})
+		}
+		go a.startCwdWatch(s.ID, c, stop)
+		return nil
+	}
+	a.mu.Unlock()
+
 	cmd := exec.Command("tmux", a.tmuxArgs("attach-session", "-t", tmuxName(s.ID))...)
 	cmd.Dir = a.cfg.root
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "TMPDIR="+a.cfg.workTmp, "TMP="+a.cfg.workTmp, "TEMP="+a.cfg.workTmp)
@@ -623,6 +648,11 @@ func (a *appState) attachSession(c *client, s *session, cols, rows int) error {
 	s.PTY = ptmx
 	s.Viewer = c
 	s.LastActive = time.Now().UnixMilli()
+	if quiet {
+		s.MuteUntil = time.Now().Add(1500 * time.Millisecond).UnixMilli()
+	} else {
+		s.MuteUntil = 0
+	}
 	stop := make(chan struct{})
 	s.CwdStop = stop
 	s.CwdKey = ""
@@ -631,6 +661,15 @@ func (a *appState) attachSession(c *client, s *session, cols, rows int) error {
 	go a.readPTY(s.ID, cmd, ptmx)
 	go a.startCwdWatch(s.ID, c, stop)
 	return nil
+}
+
+func (a *appState) releaseViewerLocked(s *session) {
+	if s.CwdStop != nil {
+		close(s.CwdStop)
+		s.CwdStop = nil
+	}
+	s.Viewer = nil
+	s.CwdKey = ""
 }
 
 func (a *appState) detachViewerLocked(s *session, notify bool) *client {
@@ -665,8 +704,10 @@ func (a *appState) readPTY(id string, cmd *exec.Cmd, ptmx *os.File) {
 			a.mu.Lock()
 			if s := a.sessions[id]; s != nil && s.Cmd == cmd {
 				s.LastActive = time.Now().UnixMilli()
-				a.rememberLocked(s, data)
-				viewer = s.Viewer
+				if time.Now().UnixMilli() >= s.MuteUntil {
+					a.rememberLocked(s, data)
+					viewer = s.Viewer
+				}
 			}
 			a.mu.Unlock()
 			if viewer != nil {
@@ -894,7 +935,7 @@ func (c *client) cleanup() {
 	delete(a.clients, c)
 	for _, s := range a.sessions {
 		if s.Viewer == c {
-			a.detachViewerLocked(s, false)
+			a.releaseViewerLocked(s)
 		}
 	}
 	a.mu.Unlock()
@@ -917,7 +958,7 @@ func (c *client) handle(msg inbound) {
 			c.reply(msg.Req, map[string]any{"error": err.Error()})
 			return
 		}
-		if err := c.app.attachSession(c, s, p.Cols, p.Rows); err != nil {
+		if err := c.app.attachSession(c, s, p.Cols, p.Rows, false); err != nil {
 			c.reply(msg.Req, map[string]any{"error": err.Error()})
 			return
 		}
@@ -939,7 +980,7 @@ func (c *client) handle(msg inbound) {
 			c.reply(msg.Req, map[string]any{"error": "Session not found"})
 			return
 		}
-		if err := c.app.attachSession(c, s, p.Size.Cols, p.Size.Rows); err != nil {
+		if err := c.app.attachSession(c, s, p.Size.Cols, p.Size.Rows, true); err != nil {
 			c.reply(msg.Req, map[string]any{"error": err.Error()})
 			return
 		}

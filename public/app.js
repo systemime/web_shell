@@ -197,10 +197,15 @@ function fitTerminal(force = false) {
   });
 }
 
+function measureCommandDock() {
+  const height = Math.ceil(commandDock.getBoundingClientRect().height);
+  document.documentElement.style.setProperty('--command-dock-height', `${height}px`);
+}
+
 function syncCommandDock() {
   cancelAnimationFrame(dockFrame);
   dockFrame = requestAnimationFrame(() => {
-    document.documentElement.style.setProperty('--command-dock-height', `${Math.ceil(commandDock.getBoundingClientRect().height)}px`);
+    measureCommandDock();
     fitTerminal(true);
   });
 }
@@ -269,6 +274,7 @@ function attachSession(id) {
   activeSession = id;
   shellDir = null;
   term.reset();
+  measureCommandDock();
   fit.fit();
   socket.emit('session:attach', { id, size: { cols: term.cols, rows: term.rows } }, (reply) => {
     pendingSession = '';
@@ -288,6 +294,7 @@ function attachSession(id) {
 }
 
 function createSession() {
+  measureCommandDock();
   fit.fit();
   socket.emit('session:create', { cols: term.cols, rows: term.rows }, (reply) => {
     activeSession = reply.session.id;
