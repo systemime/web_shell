@@ -76,17 +76,19 @@
           <button type="button" data-key="ctrl-c">C-c</button>
           <button type="button" data-key="ctrl-d">EOF</button>
         </div>
-        <div class="terminalFrame">
-          <div id="terminal" class="terminal"></div>
-        </div>
-        <div class="commandDock">
-          <textarea
-            id="commandInput"
-            class="commandInput"
-            rows="2"
-            spellcheck="false"
-            placeholder="Edit command here. Enter sends, Shift+Enter adds a new line."
-            aria-label="Command input"></textarea>
+        <div class="terminalPane">
+          <div class="terminalFrame">
+            <div id="terminal" class="terminal"></div>
+          </div>
+          <div class="commandDock">
+            <textarea
+              id="commandInput"
+              class="commandInput"
+              rows="2"
+              spellcheck="false"
+              placeholder="Edit command here. Enter sends, Shift+Enter adds a new line."
+              aria-label="Command input"></textarea>
+          </div>
         </div>
       </main>
     </div>

@@ -23,7 +23,6 @@ const refreshFiles = document.querySelector('#refreshFiles');
 const uploadFile = document.querySelector('#uploadFile');
 const terminalFrame = document.querySelector('.terminalFrame');
 const terminalEl = document.querySelector('#terminal');
-const commandDock = document.querySelector('.commandDock');
 const commandInput = document.querySelector('#commandInput');
 const mobileKeys = document.querySelector('#mobileKeys');
 
@@ -33,7 +32,6 @@ let currentDir = '';
 let shellDir = null;
 let treeRequest = 0;
 let fitFrame = 0;
-let dockFrame = 0;
 let lastSize = '';
 let terminalObserver;
 
@@ -197,19 +195,6 @@ function fitTerminal(force = false) {
   });
 }
 
-function measureCommandDock() {
-  const height = Math.ceil(commandDock.getBoundingClientRect().height);
-  document.documentElement.style.setProperty('--command-dock-height', `${height}px`);
-}
-
-function syncCommandDock() {
-  cancelAnimationFrame(dockFrame);
-  dockFrame = requestAnimationFrame(() => {
-    measureCommandDock();
-    fitTerminal(true);
-  });
-}
-
 function writeTerminal(data, fast = false) {
   term.write(data, () => term.scrollToBottom());
 }
@@ -225,7 +210,7 @@ function sendTerminalInput(data) {
 function sendCommandInput() {
   const value = commandInput.value;
   if (!value) return;
-  if (sendTerminalInput(`${value.replace(/\r?\n/g, '\r')}\r`)) {
+  if (sendTerminalInput(value.replace(/\r?\n/g, '\r')) && sendTerminalInput('\r')) {
     commandInput.value = '';
   }
 }
@@ -274,7 +259,6 @@ function attachSession(id) {
   activeSession = id;
   shellDir = null;
   term.reset();
-  measureCommandDock();
   fit.fit();
   socket.emit('session:attach', { id, size: { cols: term.cols, rows: term.rows } }, (reply) => {
     pendingSession = '';
@@ -294,7 +278,6 @@ function attachSession(id) {
 }
 
 function createSession() {
-  measureCommandDock();
   fit.fit();
   socket.emit('session:create', { cols: term.cols, rows: term.rows }, (reply) => {
     activeSession = reply.session.id;
@@ -493,16 +476,11 @@ sessionSelect.onchange = () => {
   if (sessionSelect.value) attachSession(sessionSelect.value);
 };
 if (window.ResizeObserver) {
-  terminalObserver = new ResizeObserver((entries) => {
-    if (entries.some((entry) => entry.target === commandDock)) syncCommandDock();
-    else fitTerminal();
-  });
+  terminalObserver = new ResizeObserver(fitTerminal);
   terminalObserver.observe(document.querySelector('#terminal'));
-  terminalObserver.observe(commandDock);
 } else {
-  window.addEventListener('resize', syncCommandDock);
+  window.addEventListener('resize', fitTerminal);
 }
-syncCommandDock();
 
 uploadFile.onchange = async () => {
   const file = uploadFile.files[0];

@@ -340,10 +340,17 @@ button:focus-visible,
   background: color-mix(in srgb, var(--danger), transparent 92%);
 }
 
+.terminalPane {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
 .terminalFrame {
   flex: 1 1 auto;
   min-height: 0;
-  margin: clamp(12px, 1.3vw, 18px) clamp(12px, 1.3vw, 18px) calc(var(--command-dock-height, 86px) + 8px);
+  margin: clamp(12px, 1.3vw, 18px) clamp(12px, 1.3vw, 18px) 8px;
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -352,15 +359,10 @@ button:focus-visible,
 }
 
 .commandDock {
-  position: fixed;
-  left: clamp(280px, 22vw, 340px);
-  right: 0;
-  bottom: 0;
-  z-index: 30;
+  flex: 0 0 auto;
   padding: 8px clamp(12px, 1.3vw, 18px) clamp(12px, 1.3vw, 18px);
   border-top: 1px solid var(--line);
-  background: color-mix(in srgb, var(--bg), transparent 4%);
-  backdrop-filter: blur(8px);
+  background: var(--bg);
 }
 
 .commandInput {
@@ -476,12 +478,11 @@ button:focus-visible,
   }
 
   .terminalFrame {
-    margin: 10px 10px calc(var(--command-dock-height, 68px) + 8px);
+    margin: 10px 10px 8px;
     padding: 8px;
   }
 
   .commandDock {
-    left: 0;
     padding: 8px 10px 10px;
   }
 
@@ -570,14 +571,13 @@ button:focus-visible,
   }
 
   .terminalFrame {
-    margin: 0 0 var(--command-dock-height, 58px);
+    margin: 0;
     padding: 4px 2px 2px 4px;
     border: 0;
     border-radius: 0;
   }
 
   .commandDock {
-    left: 0;
     padding: 0;
     border-top: 1px solid var(--line);
   }
