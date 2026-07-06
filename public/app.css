@@ -299,12 +299,16 @@ button:focus-visible,
 
 .main {
   min-width: 0;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: var(--bg);
 }
 
 .topbar {
+  flex: 0 0 auto;
   min-height: 62px;
   padding: 12px 18px;
   border-bottom: 1px solid var(--line);
@@ -337,6 +341,7 @@ button:focus-visible,
 }
 
 .terminalFrame {
+  flex: 1 1 auto;
   min-height: 0;
   margin: clamp(12px, 1.3vw, 18px) clamp(12px, 1.3vw, 18px) 8px;
   padding: 14px;
@@ -347,6 +352,10 @@ button:focus-visible,
 }
 
 .commandInput {
+  flex: 0 0 auto;
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
   display: block;
   width: calc(100% - clamp(24px, 2.6vw, 36px));
   min-height: 48px;
@@ -366,6 +375,7 @@ button:focus-visible,
 
 .mobileKeys {
   display: none;
+  flex: 0 0 auto;
 }
 
 .terminal {
@@ -436,10 +446,6 @@ button:focus-visible,
 
   .topActions {
     margin-left: 0;
-  }
-
-  .main {
-    grid-template-rows: auto auto minmax(0, 1fr) auto;
   }
 
   .mobileKeys {
