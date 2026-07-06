@@ -1,17 +1,9 @@
 {
   "name": "web-worker-shell",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node server.js",
     "test": "node --test"
-  },
-  "dependencies": {
-    "@xterm/addon-fit": "^0.10.0",
-    "@xterm/xterm": "^5.5.0",
-    "express": "^4.21.2",
-    "node-pty": "^1.0.0",
-    "socket.io": "^4.8.1"
   }
 }

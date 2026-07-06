@@ -30,19 +30,17 @@ var embedded embed.FS
 
 const (
 	historyLimit = 1024 * 1024
-	tmuxPrefix   = "webworker_"
 )
 
 var idPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
 
 type config struct {
-	host       string
-	port       int
-	root       string
-	maxUpload  int64
-	tmuxSocket string
-	titleFile  string
-	workTmp    string
+	host      string
+	port      int
+	root      string
+	maxUpload int64
+	titleFile string
+	workTmp   string
 }
 
 type appState struct {
@@ -66,7 +64,6 @@ type session struct {
 	CwdStop      chan struct{}
 	CreatedAt    int64
 	LastActive   int64
-	MuteUntil    int64
 }
 
 type sessionInfo struct {
@@ -120,13 +117,12 @@ func newApp() (*appState, error) {
 		return nil, err
 	}
 	cfg := config{
-		host:       getenv("HOST", "127.0.0.1"),
-		port:       intEnv("PORT", 8787),
-		root:       guard.root,
-		maxUpload:  int64(intEnv("WEB_WORKER_MAX_UPLOAD_MB", 100)) * 1024 * 1024,
-		tmuxSocket: getenv("WEB_WORKER_TMUX_SOCKET", "web-worker-shell"),
-		titleFile:  filepath.Join(cwd, "session-titles.json"),
-		workTmp:    filepath.Join(guard.root, ".web-worker-tmp"),
+		host:      getenv("HOST", "127.0.0.1"),
+		port:      intEnv("PORT", 8787),
+		root:      guard.root,
+		maxUpload: int64(intEnv("WEB_WORKER_MAX_UPLOAD_MB", 100)) * 1024 * 1024,
+		titleFile: filepath.Join(cwd, "session-titles.json"),
+		workTmp:   filepath.Join(guard.root, ".web-worker-tmp"),
 	}
 	if err := os.MkdirAll(cfg.workTmp, 0o700); err != nil {
 		return nil, err
@@ -417,7 +413,7 @@ func (a *appState) saveTitlesLocked() {
 	_ = os.WriteFile(a.cfg.titleFile, append(b, '\n'), 0o600)
 }
 
-func defaultTitle(id string) string { return "tmux " + id[:8] }
+func defaultTitle(id string) string { return "shell " + id[:8] }
 
 func cleanTitle(title string) string {
 	t := strings.Join(strings.Fields(title), " ")
@@ -451,7 +447,6 @@ func (a *appState) ensureSessionLocked(id string, createdAt, lastActive int64) *
 }
 
 func (a *appState) listSessions() []sessionInfo {
-	a.syncTmuxSessions()
 	a.mu.Lock()
 	rows := make([]sessionInfo, 0, len(a.sessions))
 	for _, s := range a.sessions {
@@ -484,100 +479,11 @@ func (a *appState) rememberLocked(s *session, data string) {
 	}
 }
 
-func (a *appState) tmuxArgs(args ...string) []string {
-	return append([]string{"-L", a.cfg.tmuxSocket}, args...)
-}
-
-func (a *appState) runTmux(args ...string) (string, error) {
-	cmd := exec.Command("tmux", a.tmuxArgs(args...)...)
-	out, err := cmd.Output()
-	if err == nil {
-		return string(out), nil
-	}
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		msg := strings.TrimSpace(string(ee.Stderr))
-		if msg == "" {
-			msg = strings.TrimSpace(string(out))
-		}
-		if msg == "" {
-			msg = "tmux failed"
-		}
-		return "", errors.New(msg)
-	}
-	return "", err
-}
-
-func (a *appState) tryTmux(args ...string) string {
-	out, err := a.runTmux(args...)
-	if err != nil {
-		return ""
-	}
-	return out
-}
-
-func tmuxName(id string) string { return tmuxPrefix + id }
-
-func idFromTmuxName(name string) string {
-	if !strings.HasPrefix(name, tmuxPrefix) {
-		return ""
-	}
-	id := strings.TrimPrefix(name, tmuxPrefix)
-	if idPattern.MatchString(id) {
-		return id
-	}
-	return ""
-}
-
-func (a *appState) tmuxHasSession(id string) bool {
-	return exec.Command("tmux", a.tmuxArgs("has-session", "-t", tmuxName(id))...).Run() == nil
-}
-
-func (a *appState) setTmuxDefaults() {
-	_ = a.tryTmux("set-option", "-g", "mouse", "off")
-	_ = a.tryTmux("set-option", "-g", "history-limit", "8000")
-}
-
-func (a *appState) syncTmuxSessions() {
-	out := a.tryTmux("list-sessions", "-F", "#{session_name}\t#{session_created}\t#{session_activity}")
-	alive := map[string][2]int64{}
-	for _, line := range strings.Split(out, "\n") {
-		if line == "" {
-			continue
-		}
-		parts := strings.Split(line, "\t")
-		if len(parts) < 3 {
-			continue
-		}
-		id := idFromTmuxName(parts[0])
-		if id == "" {
-			continue
-		}
-		created, _ := strconv.ParseInt(parts[1], 10, 64)
-		active, _ := strconv.ParseInt(parts[2], 10, 64)
-		alive[id] = [2]int64{created * 1000, active * 1000}
-	}
-	a.mu.Lock()
-	for id, meta := range alive {
-		a.ensureSessionLocked(id, meta[0], meta[1])
-	}
-	for id, s := range a.sessions {
-		if _, ok := alive[id]; !ok && s.Cmd == nil {
-			delete(a.sessions, id)
-		}
-	}
-	a.mu.Unlock()
-}
-
 func (a *appState) createSession() (*session, error) {
 	id, err := randomID()
 	if err != nil {
 		return nil, err
 	}
-	if _, err := a.runTmux("new-session", "-d", "-s", tmuxName(id), "-c", a.cfg.root); err != nil {
-		return nil, err
-	}
-	a.setTmuxDefaults()
 	now := time.Now().UnixMilli()
 	a.mu.Lock()
 	s := a.ensureSessionLocked(id, now, now)
@@ -593,10 +499,6 @@ func randomID() (string, error) {
 }
 
 func (a *appState) attachSession(c *client, s *session, cols, rows int, quiet bool) error {
-	if !a.tmuxHasSession(s.ID) {
-		return errors.New("Session not found")
-	}
-	a.setTmuxDefaults()
 	if cols <= 0 {
 		cols = 100
 	}
@@ -605,6 +507,10 @@ func (a *appState) attachSession(c *client, s *session, cols, rows int, quiet bo
 	}
 
 	a.mu.Lock()
+	if s == nil || a.sessions[s.ID] != s {
+		a.mu.Unlock()
+		return errors.New("Session not found")
+	}
 	if s.Cmd != nil && s.PTY != nil {
 		old := s.Viewer
 		if s.CwdStop != nil {
@@ -614,7 +520,6 @@ func (a *appState) attachSession(c *client, s *session, cols, rows int, quiet bo
 		ptmx := s.PTY
 		s.Viewer = c
 		s.LastActive = time.Now().UnixMilli()
-		s.MuteUntil = 0
 		s.CwdStop = stop
 		s.CwdKey = ""
 		a.mu.Unlock()
@@ -627,9 +532,10 @@ func (a *appState) attachSession(c *client, s *session, cols, rows int, quiet bo
 	}
 	a.mu.Unlock()
 
-	cmd := exec.Command("tmux", a.tmuxArgs("attach-session", "-t", tmuxName(s.ID))...)
+	shell := getenv("SHELL", "/bin/bash")
+	cmd := exec.Command(shell)
 	cmd.Dir = a.cfg.root
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "TMPDIR="+a.cfg.workTmp, "TMP="+a.cfg.workTmp, "TEMP="+a.cfg.workTmp)
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "TMPDIR="+a.cfg.workTmp, "TMP="+a.cfg.workTmp, "TEMP="+a.cfg.workTmp, "WEB_WORKER_SESSION="+s.ID)
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
 	if err != nil {
 		return err
@@ -648,11 +554,7 @@ func (a *appState) attachSession(c *client, s *session, cols, rows int, quiet bo
 	s.PTY = ptmx
 	s.Viewer = c
 	s.LastActive = time.Now().UnixMilli()
-	if quiet {
-		s.MuteUntil = time.Now().Add(1500 * time.Millisecond).UnixMilli()
-	} else {
-		s.MuteUntil = 0
-	}
+	_ = quiet
 	stop := make(chan struct{})
 	s.CwdStop = stop
 	s.CwdKey = ""
@@ -704,10 +606,8 @@ func (a *appState) readPTY(id string, cmd *exec.Cmd, ptmx *os.File) {
 			a.mu.Lock()
 			if s := a.sessions[id]; s != nil && s.Cmd == cmd {
 				s.LastActive = time.Now().UnixMilli()
-				if time.Now().UnixMilli() >= s.MuteUntil {
-					a.rememberLocked(s, data)
-					viewer = s.Viewer
-				}
+				a.rememberLocked(s, data)
+				viewer = s.Viewer
 			}
 			a.mu.Unlock()
 			if viewer != nil {
@@ -731,9 +631,7 @@ func (a *appState) readPTY(id string, cmd *exec.Cmd, ptmx *os.File) {
 }
 
 func (a *appState) finishPTY(id string, cmd *exec.Cmd, exitCode int) {
-	alive := a.tmuxHasSession(id)
 	var viewer *client
-	broadcast := false
 	a.mu.Lock()
 	s := a.sessions[id]
 	if s == nil || s.Cmd != cmd {
@@ -748,37 +646,13 @@ func (a *appState) finishPTY(id string, cmd *exec.Cmd, exitCode int) {
 	s.Cmd = nil
 	s.PTY = nil
 	s.Viewer = nil
-	if !alive {
-		a.rememberLocked(s, fmt.Sprintf("\r\n[process exited: %d]\r\n", exitCode))
-		delete(a.sessions, id)
-		broadcast = true
-	}
+	a.rememberLocked(s, fmt.Sprintf("\r\n[process exited: %d]\r\n", exitCode))
+	delete(a.sessions, id)
 	a.mu.Unlock()
 	if viewer != nil {
-		if alive {
-			viewer.emit("terminal:detached", map[string]any{"id": id})
-		} else {
-			viewer.emit("terminal:exit", map[string]any{"id": id, "exitCode": exitCode})
-		}
+		viewer.emit("terminal:exit", map[string]any{"id": id, "exitCode": exitCode})
 	}
-	if broadcast {
-		a.broadcastSessions()
-	}
-}
-
-func (a *appState) sendTmuxControl(id, action string) {
-	target := tmuxName(id)
-	switch action {
-	case "page-up":
-		_, _ = a.runTmux("copy-mode", "-u", "-t", target)
-	case "page-down":
-		_ = a.tryTmux("send-keys", "-t", target, "-X", "page-down")
-	case "scroll-up":
-		_, _ = a.runTmux("copy-mode", "-e", "-t", target)
-		_ = a.tryTmux("send-keys", "-t", target, "-X", "-N", "5", "scroll-up")
-	case "scroll-down":
-		_ = a.tryTmux("send-keys", "-t", target, "-X", "-N", "5", "scroll-down")
-	}
+	a.broadcastSessions()
 }
 
 type cwdInfo struct {
@@ -788,8 +662,18 @@ type cwdInfo struct {
 }
 
 func (a *appState) readSessionCwd(id string) *cwdInfo {
-	cwd := strings.TrimSpace(a.tryTmux("display-message", "-p", "-t", tmuxName(id), "#{pane_current_path}"))
-	if cwd == "" {
+	a.mu.Lock()
+	s := a.sessions[id]
+	pid := 0
+	if s != nil && s.Cmd != nil && s.Cmd.Process != nil {
+		pid = s.Cmd.Process.Pid
+	}
+	a.mu.Unlock()
+	if pid == 0 {
+		return nil
+	}
+	cwd, err := os.Readlink(fmt.Sprintf("/proc/%d/cwd", pid))
+	if err != nil || cwd == "" {
 		return nil
 	}
 	full, err := filepath.Abs(cwd)
@@ -959,6 +843,7 @@ func (c *client) handle(msg inbound) {
 			return
 		}
 		if err := c.app.attachSession(c, s, p.Cols, p.Rows, false); err != nil {
+			c.app.closeSession(s.ID)
 			c.reply(msg.Req, map[string]any{"error": err.Error()})
 			return
 		}
@@ -974,9 +859,9 @@ func (c *client) handle(msg inbound) {
 			return
 		}
 		c.app.mu.Lock()
-		s := c.app.ensureSessionLocked(p.ID, 0, 0)
+		s := c.app.sessions[p.ID]
 		c.app.mu.Unlock()
-		if !c.app.tmuxHasSession(p.ID) {
+		if s == nil {
 			c.reply(msg.Req, map[string]any{"error": "Session not found"})
 			return
 		}
@@ -1005,12 +890,6 @@ func (c *client) handle(msg inbound) {
 		}
 		_ = json.Unmarshal(msg.Data, &p)
 		c.app.resizeTerminal(c, p.ID, p.Cols, p.Rows)
-	case "terminal:control":
-		var p struct{ ID, Action string }
-		_ = json.Unmarshal(msg.Data, &p)
-		if c.app.ownsSession(c, p.ID) {
-			c.app.sendTmuxControl(p.ID, p.Action)
-		}
 	}
 }
 
@@ -1071,9 +950,6 @@ func (a *appState) closeSession(id string) bool {
 		a.saveTitlesLocked()
 	}
 	a.mu.Unlock()
-	if a.tmuxHasSession(id) {
-		_, _ = a.runTmux("kill-session", "-t", tmuxName(id))
-	}
 	if viewer != nil {
 		viewer.emit("terminal:exit", map[string]any{"id": id, "exitCode": nil})
 	}
@@ -1089,11 +965,12 @@ func (a *appState) renameSession(id, title string) map[string]any {
 	if title == "" {
 		return map[string]any{"ok": false, "error": "Name is required"}
 	}
-	if !a.tmuxHasSession(id) {
+	a.mu.Lock()
+	s := a.sessions[id]
+	if s == nil {
+		a.mu.Unlock()
 		return map[string]any{"ok": false, "error": "Session not found"}
 	}
-	a.mu.Lock()
-	s := a.ensureSessionLocked(id, 0, 0)
 	s.Title = title
 	a.titles[id] = title
 	a.saveTitlesLocked()

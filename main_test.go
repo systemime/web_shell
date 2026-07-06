@@ -34,7 +34,7 @@ func TestPathGuardRejectsTraversalAndSymlinkEscape(t *testing.T) {
 	}
 }
 
-func TestCleanTitleAndID(t *testing.T) {
+func TestCleanTitleAndDefaultTitle(t *testing.T) {
 	if got := cleanTitle("  hello\n world  "); got != "hello world" {
 		t.Fatalf("cleanTitle = %q", got)
 	}
@@ -42,10 +42,7 @@ func TestCleanTitleAndID(t *testing.T) {
 	if len([]rune(long)) != 80 {
 		t.Fatalf("title length = %d", len([]rune(long)))
 	}
-	if idFromTmuxName(tmuxName("0123456789abcdef0123456789abcdef")) == "" {
-		t.Fatal("valid id rejected")
-	}
-	if idFromTmuxName(tmuxName("not-valid")) != "" {
-		t.Fatal("invalid id accepted")
+	if got := defaultTitle("0123456789abcdef0123456789abcdef"); got != "shell 01234567" {
+		t.Fatalf("defaultTitle = %q", got)
 	}
 }

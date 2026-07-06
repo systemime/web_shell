@@ -54,9 +54,9 @@ term.open(terminalEl);
 term.attachCustomWheelEventHandler((event) => {
   if (event.ctrlKey || event.metaKey) return false;
   if (event.deltaY === 0 || event.shiftKey) return true;
+  if (term.buffer.active.type !== 'normal') return true;
   event.preventDefault();
-  if (term.buffer.active.type === 'normal') term.scrollLines(event.deltaY > 0 ? 5 : -5);
-  else sendTerminalControl(event.deltaY > 0 ? 'scroll-down' : 'scroll-up');
+  term.scrollLines(event.deltaY > 0 ? 5 : -5);
   return false;
 });
 
@@ -226,11 +226,8 @@ function sendShortcut(name) {
 }
 
 function sendTerminalControl(action) {
-  if (!activeSession || !socket.connected) {
-    setStatus('No active shell.');
-    return;
-  }
-  socket.emit('terminal:control', { id: activeSession, action });
+  if (action === 'page-up') term.scrollPages(-1);
+  if (action === 'page-down') term.scrollPages(1);
   focusTerminal(true);
 }
 
