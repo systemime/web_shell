@@ -479,6 +479,17 @@ func (a *appState) rememberLocked(s *session, data string) {
 	}
 }
 
+func (a *appState) sessionSnapshot(id string) (sessionInfo, []string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	s := a.sessions[id]
+	if s == nil {
+		return sessionInfo{}, nil
+	}
+	history := append([]string(nil), s.History...)
+	return sessionInfo{ID: s.ID, Title: s.Title, CreatedAt: s.CreatedAt, LastActive: s.LastActive}, history
+}
+
 func (a *appState) createSession() (*session, error) {
 	id, err := randomID()
 	if err != nil {
@@ -847,7 +858,8 @@ func (c *client) handle(msg inbound) {
 			c.reply(msg.Req, map[string]any{"error": err.Error()})
 			return
 		}
-		c.reply(msg.Req, map[string]any{"session": sessionInfo{ID: s.ID, Title: s.Title, CreatedAt: s.CreatedAt, LastActive: s.LastActive}, "history": s.History})
+		info, history := c.app.sessionSnapshot(s.ID)
+		c.reply(msg.Req, map[string]any{"session": info, "history": history})
 	case "session:attach":
 		var p struct {
 			ID   string                   `json:"id"`
@@ -869,7 +881,8 @@ func (c *client) handle(msg inbound) {
 			c.reply(msg.Req, map[string]any{"error": err.Error()})
 			return
 		}
-		c.reply(msg.Req, map[string]any{"session": sessionInfo{ID: s.ID, Title: s.Title, CreatedAt: s.CreatedAt, LastActive: time.Now().UnixMilli()}})
+		info, history := c.app.sessionSnapshot(s.ID)
+		c.reply(msg.Req, map[string]any{"session": info, "history": history})
 	case "session:close":
 		var id string
 		_ = json.Unmarshal(msg.Data, &id)

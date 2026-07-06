@@ -196,7 +196,12 @@ function fitTerminal(force = false) {
 }
 
 function writeTerminal(data, fast = false) {
+  if (!data) return;
   term.write(data, () => term.scrollToBottom());
+}
+
+function replayHistory(history) {
+  if (Array.isArray(history)) writeTerminal(history.join(''), true);
 }
 
 function sendTerminalInput(data) {
@@ -268,6 +273,7 @@ function attachSession(id) {
     rememberSession(id);
     sessionSelect.value = id;
     sessionTitle.textContent = reply.session.title;
+    replayHistory(reply.history);
     setStatus('Attached. Closing this tab keeps the shell running.');
     fitTerminal(true);
     focusTerminal();
@@ -283,6 +289,7 @@ function createSession() {
     shellDir = null;
     sessionTitle.textContent = reply.session.title;
     term.reset();
+    replayHistory(reply.history);
     setStatus('Shell started.');
     fitTerminal(true);
     focusTerminal();

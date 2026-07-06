@@ -46,3 +46,18 @@ func TestCleanTitleAndDefaultTitle(t *testing.T) {
 		t.Fatalf("defaultTitle = %q", got)
 	}
 }
+
+func TestSessionSnapshotCopiesHistory(t *testing.T) {
+	id := "0123456789abcdef0123456789abcdef"
+	app := &appState{sessions: map[string]*session{
+		id: {ID: id, Title: "shell", CreatedAt: 1, LastActive: 2, History: []string{"hello"}},
+	}}
+	info, history := app.sessionSnapshot(id)
+	if info.ID != id || info.Title != "shell" || len(history) != 1 || history[0] != "hello" {
+		t.Fatalf("bad snapshot: %#v %#v", info, history)
+	}
+	history[0] = "changed"
+	if app.sessions[id].History[0] != "hello" {
+		t.Fatal("history snapshot aliases session history")
+	}
+}
