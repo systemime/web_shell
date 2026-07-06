@@ -23,6 +23,7 @@ const refreshFiles = document.querySelector('#refreshFiles');
 const uploadFile = document.querySelector('#uploadFile');
 const terminalFrame = document.querySelector('.terminalFrame');
 const terminalEl = document.querySelector('#terminal');
+const commandDock = document.querySelector('.commandDock');
 const commandInput = document.querySelector('#commandInput');
 const mobileKeys = document.querySelector('#mobileKeys');
 
@@ -32,6 +33,7 @@ let currentDir = '';
 let shellDir = null;
 let treeRequest = 0;
 let fitFrame = 0;
+let dockFrame = 0;
 let lastSize = '';
 let terminalObserver;
 
@@ -192,6 +194,14 @@ function fitTerminal(force = false) {
     if (activeSession && socket.connected) {
       socket.emit('terminal:resize', { id: activeSession, cols: term.cols, rows: term.rows });
     }
+  });
+}
+
+function syncCommandDock() {
+  cancelAnimationFrame(dockFrame);
+  dockFrame = requestAnimationFrame(() => {
+    document.documentElement.style.setProperty('--command-dock-height', `${Math.ceil(commandDock.getBoundingClientRect().height)}px`);
+    fitTerminal(true);
   });
 }
 
@@ -476,11 +486,16 @@ sessionSelect.onchange = () => {
   if (sessionSelect.value) attachSession(sessionSelect.value);
 };
 if (window.ResizeObserver) {
-  terminalObserver = new ResizeObserver(fitTerminal);
+  terminalObserver = new ResizeObserver((entries) => {
+    if (entries.some((entry) => entry.target === commandDock)) syncCommandDock();
+    else fitTerminal();
+  });
   terminalObserver.observe(document.querySelector('#terminal'));
+  terminalObserver.observe(commandDock);
 } else {
-  window.addEventListener('resize', fitTerminal);
+  window.addEventListener('resize', syncCommandDock);
 }
+syncCommandDock();
 
 uploadFile.onchange = async () => {
   const file = uploadFile.files[0];

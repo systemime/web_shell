@@ -343,7 +343,7 @@ button:focus-visible,
 .terminalFrame {
   flex: 1 1 auto;
   min-height: 0;
-  margin: clamp(12px, 1.3vw, 18px) clamp(12px, 1.3vw, 18px) 86px;
+  margin: clamp(12px, 1.3vw, 18px) clamp(12px, 1.3vw, 18px) calc(var(--command-dock-height, 86px) + 8px);
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -476,7 +476,7 @@ button:focus-visible,
   }
 
   .terminalFrame {
-    margin: 10px 10px 78px;
+    margin: 10px 10px calc(var(--command-dock-height, 68px) + 8px);
     padding: 8px;
   }
 
@@ -570,7 +570,7 @@ button:focus-visible,
   }
 
   .terminalFrame {
-    margin: 0 0 58px;
+    margin: 0 0 var(--command-dock-height, 58px);
     padding: 4px 2px 2px 4px;
     border: 0;
     border-radius: 0;
