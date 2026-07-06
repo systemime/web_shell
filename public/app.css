@@ -77,6 +77,7 @@ button:focus-visible,
 .drawerClose:focus-visible,
 .sessionSelect:focus-visible,
 .shortcutSelect:focus-visible,
+.commandInput:focus-visible,
 .mobileKeys button:focus-visible,
 .row:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent), transparent 20%);
@@ -299,7 +300,7 @@ button:focus-visible,
 .main {
   min-width: 0;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
   background: var(--bg);
 }
 
@@ -337,12 +338,30 @@ button:focus-visible,
 
 .terminalFrame {
   min-height: 0;
-  margin: clamp(12px, 1.3vw, 18px);
+  margin: clamp(12px, 1.3vw, 18px) clamp(12px, 1.3vw, 18px) 8px;
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: #0f131a;
   overflow: hidden;
+}
+
+.commandInput {
+  display: block;
+  width: calc(100% - clamp(24px, 2.6vw, 36px));
+  min-height: 48px;
+  height: auto;
+  margin: 0 clamp(12px, 1.3vw, 18px) clamp(12px, 1.3vw, 18px);
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel2);
+  color: var(--text);
+  font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  resize: vertical;
+  caret-color: var(--accent);
+  outline: 0;
+  white-space: pre-wrap;
 }
 
 .mobileKeys {
@@ -420,7 +439,7 @@ button:focus-visible,
   }
 
   .main {
-    grid-template-rows: auto auto minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
   }
 
   .mobileKeys {
@@ -444,6 +463,11 @@ button:focus-visible,
   .terminalFrame {
     margin: 10px;
     padding: 8px;
+  }
+
+  .commandInput {
+    width: calc(100% - 20px);
+    margin: 0 10px 10px;
   }
 
   .tree {
@@ -534,6 +558,15 @@ button:focus-visible,
     margin: 0;
     padding: 4px 2px 2px 4px;
     border: 0;
+    border-radius: 0;
+  }
+
+  .commandInput {
+    width: 100%;
+    min-height: 42px;
+    margin: 0;
+    border-inline: 0;
+    border-bottom: 0;
     border-radius: 0;
   }
 

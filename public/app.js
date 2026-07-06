@@ -23,6 +23,7 @@ const refreshFiles = document.querySelector('#refreshFiles');
 const uploadFile = document.querySelector('#uploadFile');
 const terminalFrame = document.querySelector('.terminalFrame');
 const terminalEl = document.querySelector('#terminal');
+const commandInput = document.querySelector('#commandInput');
 const mobileKeys = document.querySelector('#mobileKeys');
 
 let activeSession = '';
@@ -204,6 +205,14 @@ function sendTerminalInput(data) {
     return false;
   }
   return socket.emit('terminal:input', { id: activeSession, data });
+}
+
+function sendCommandInput() {
+  const value = commandInput.value;
+  if (!value) return;
+  if (sendTerminalInput(`${value.replace(/\r?\n/g, '\r')}\r`)) {
+    commandInput.value = '';
+  }
 }
 
 function sendShortcut(name) {
@@ -432,6 +441,11 @@ term.onData((data) => {
 });
 
 terminalFrame.addEventListener('pointerdown', () => focusTerminal(true));
+commandInput.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+  event.preventDefault();
+  sendCommandInput();
+});
 mobileKeys.onclick = (event) => {
   const button = event.target.closest('button');
   if (!button) return;
