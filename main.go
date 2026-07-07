@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -486,7 +487,7 @@ func (a *appState) sessionSnapshot(id string) (sessionInfo, []string) {
 	if s == nil {
 		return sessionInfo{}, nil
 	}
-	history := append([]string(nil), s.History...)
+	history := tailHistory(s.History, replayLimit)
 	return sessionInfo{ID: s.ID, Title: s.Title, CreatedAt: s.CreatedAt, LastActive: s.LastActive}, history
 }
 
@@ -546,7 +547,7 @@ func (a *appState) attachSession(c *client, s *session, cols, rows int, quiet bo
 	shell := getenv("SHELL", "/bin/bash")
 	cmd := exec.Command(shell)
 	cmd.Dir = a.cfg.root
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "TMPDIR="+a.cfg.workTmp, "TMP="+a.cfg.workTmp, "TEMP="+a.cfg.workTmp, "WEB_WORKER_SESSION="+s.ID)
+	cmd.Env = shellEnv(a.cfg.workTmp, s.ID)
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
 	if err != nil {
 		return err
@@ -991,4 +992,43 @@ func (a *appState) renameSession(id, title string) map[string]any {
 	a.mu.Unlock()
 	a.broadcastSessions()
 	return map[string]any{"ok": true, "session": info}
+}
+
+// ponytail: cap replay so busy shells switch fast; add paging only if full scrollback is needed.
+const replayLimit = 256 * 1024
+
+func tailHistory(history []string, limit int) []string {
+	if len(history) == 0 || limit <= 0 {
+		return nil
+	}
+	start, bytes := len(history), 0
+	for start > 0 {
+		size := len(history[start-1])
+		if bytes > 0 && bytes+size > limit {
+			break
+		}
+		bytes += size
+		start--
+		if bytes >= limit {
+			break
+		}
+	}
+	return append([]string(nil), history[start:]...)
+}
+
+func shellEnv(workTmp, sessionID string) []string {
+	env := os.Environ()
+	if os.Getenv("HOME") == "" {
+		home := ""
+		if current, err := user.Current(); err == nil {
+			home = current.HomeDir
+		}
+		if home == "" && os.Getuid() == 0 {
+			home = "/root"
+		}
+		if home != "" {
+			env = append(env, "HOME="+home)
+		}
+	}
+	return append(env, "TERM=xterm-256color", "TMPDIR="+workTmp, "TMP="+workTmp, "TEMP="+workTmp, "WEB_WORKER_SESSION="+sessionID)
 }

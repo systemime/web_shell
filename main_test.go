@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -60,4 +61,57 @@ func TestSessionSnapshotCopiesHistory(t *testing.T) {
 	if app.sessions[id].History[0] != "hello" {
 		t.Fatal("history snapshot aliases session history")
 	}
+}
+
+func TestSessionSnapshotLimitsReplayHistory(t *testing.T) {
+	id := "0123456789abcdef0123456789abcdef"
+	app := &appState{sessions: map[string]*session{
+		id: {ID: id, Title: "shell", History: []string{strings.Repeat("x", replayLimit), "new"}},
+	}}
+	_, history := app.sessionSnapshot(id)
+	if len(history) != 1 || history[0] != "new" {
+		t.Fatalf("history = %#v", history)
+	}
+}
+
+func TestTailHistoryKeepsRecentChunks(t *testing.T) {
+	history := tailHistory([]string{"old", "middle", "new"}, len("middle")+len("new"))
+	if strings.Join(history, ":") != "middle:new" {
+		t.Fatalf("history = %#v", history)
+	}
+}
+
+func TestShellEnvFillsEmptyHome(t *testing.T) {
+	t.Setenv("HOME", "")
+	env := shellEnv("/tmp/web-worker", "0123456789abcdef0123456789abcdef")
+	home := envValue(env, "HOME")
+	current, err := user.Current()
+	if err == nil && current.HomeDir != "" && home != current.HomeDir {
+		t.Fatalf("HOME = %q, want %q", home, current.HomeDir)
+	}
+	if err != nil && os.Getuid() == 0 && home != "/root" {
+		t.Fatalf("HOME = %q, want /root", home)
+	}
+	if got := envValue(env, "TERM"); got != "xterm-256color" {
+		t.Fatalf("TERM = %q", got)
+	}
+}
+
+func TestShellEnvKeepsExistingHome(t *testing.T) {
+	t.Setenv("HOME", "/custom/home")
+	env := shellEnv("/tmp/web-worker", "0123456789abcdef0123456789abcdef")
+	if got := envValue(env, "HOME"); got != "/custom/home" {
+		t.Fatalf("HOME = %q", got)
+	}
+}
+
+func envValue(env []string, key string) string {
+	prefix := key + "="
+	value := ""
+	for _, item := range env {
+		if strings.HasPrefix(item, prefix) {
+			value = strings.TrimPrefix(item, prefix)
+		}
+	}
+	return value
 }

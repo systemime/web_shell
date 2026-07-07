@@ -34,6 +34,8 @@ let treeRequest = 0;
 let fitFrame = 0;
 let lastSize = '';
 let terminalObserver;
+// ponytail: xterm can answer terminal queries while parsing output; replay must not talk to a live PTY.
+let terminalWriteSessions = [];
 
 const term = new Terminal({
   cursorBlink: true,
@@ -195,9 +197,13 @@ function fitTerminal(force = false) {
   });
 }
 
-function writeTerminal(data, fast = false) {
+function writeTerminal(data, replay = false) {
   if (!data) return;
-  term.write(data, () => term.scrollToBottom());
+  terminalWriteSessions.push(replay ? '' : activeSession);
+  term.write(data, () => {
+    terminalWriteSessions.shift();
+    term.scrollToBottom();
+  });
 }
 
 function replayHistory(history) {
@@ -236,6 +242,12 @@ function sendTerminalControl(action) {
   focusTerminal(true);
 }
 
+function setActiveSessionUI(id) {
+  sessionSelect.value = id || '';
+  if (id && sessionSelect.selectedOptions[0]) sessionTitle.textContent = sessionSelect.selectedOptions[0].textContent;
+  sessionsEl.querySelectorAll('.row').forEach((row) => row.classList.toggle('active', row.dataset.id === id));
+}
+
 function renderSessions(items) {
   sessionCount.textContent = items.length;
   const current = activeSession || pendingSession || '';
@@ -245,6 +257,7 @@ function renderSessions(items) {
   if (!items.length) frag.append(emptyState('No shells yet.'));
   for (const item of items) {
     const row = clickableRow(() => attachSession(item.id));
+    row.dataset.id = item.id;
     if (item.id === activeSession || item.id === pendingSession) row.classList.add('active');
     row.innerHTML = `<span>$</span><span class="name"></span><span class="meta"></span>`;
     row.querySelector('.name').textContent = item.title;
@@ -260,18 +273,20 @@ function attachSession(id) {
   pendingSession = id;
   activeSession = id;
   shellDir = null;
+  setActiveSessionUI(id);
   term.reset();
   fit.fit();
   socket.emit('session:attach', { id, size: { cols: term.cols, rows: term.rows } }, (reply) => {
     pendingSession = '';
     if (reply?.error) {
       if (activeSession === id) activeSession = '';
+      setActiveSessionUI(activeSession);
       if (localStorage.getItem(sessionKey) === id) rememberSession('');
       return setStatus(reply.error);
     }
     activeSession = id;
     rememberSession(id);
-    sessionSelect.value = id;
+    setActiveSessionUI(id);
     sessionTitle.textContent = reply.session.title;
     replayHistory(reply.history);
     setStatus('Attached. Closing this tab keeps the shell running.');
@@ -285,7 +300,7 @@ function createSession() {
   socket.emit('session:create', { cols: term.cols, rows: term.rows }, (reply) => {
     activeSession = reply.session.id;
     rememberSession(activeSession);
-    sessionSelect.value = activeSession;
+    setActiveSessionUI(activeSession);
     shellDir = null;
     sessionTitle.textContent = reply.session.title;
     term.reset();
@@ -425,6 +440,7 @@ socket.on('terminal:exit', ({ id }) => {
     activeSession = '';
     rememberSession('');
     shellDir = null;
+    setActiveSessionUI('');
     sessionTitle.textContent = 'No shell';
     setStatus('Shell closed.');
   }
@@ -434,14 +450,15 @@ socket.on('terminal:detached', ({ id }) => {
   activeSession = '';
   rememberSession('');
   shellDir = null;
-  sessionsEl.querySelectorAll('.active').forEach((item) => item.classList.remove('active'));
+  setActiveSessionUI('');
   sessionTitle.textContent = 'Detached';
   setStatus('Opened in another browser.');
   writeTerminal('\r\n[detached: opened in another browser]\r\n');
 });
 
 term.onData((data) => {
-  if (activeSession && socket.connected) socket.emit('terminal:input', { id: activeSession, data });
+  const id = terminalWriteSessions.length ? terminalWriteSessions[0] : activeSession;
+  if (id && socket.connected) socket.emit('terminal:input', { id, data });
 });
 
 terminalFrame.addEventListener('pointerdown', () => focusTerminal(true));
