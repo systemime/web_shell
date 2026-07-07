@@ -7,6 +7,7 @@ if (pageUrl.username || pageUrl.password) {
 }
 
 const sessionKey = 'web-worker-session';
+const commandHeightKey = 'web-worker-command-height';
 const rootLine = document.querySelector('#rootLine');
 const statusEl = document.querySelector('#status');
 const sessionsEl = document.querySelector('#sessions');
@@ -21,8 +22,10 @@ const fileTree = document.querySelector('#fileTree');
 const filePath = document.querySelector('#filePath');
 const refreshFiles = document.querySelector('#refreshFiles');
 const uploadFile = document.querySelector('#uploadFile');
+const terminalPane = document.querySelector('.terminalPane');
 const terminalFrame = document.querySelector('.terminalFrame');
 const terminalEl = document.querySelector('#terminal');
+const commandResize = document.querySelector('#commandResize');
 const commandInput = document.querySelector('#commandInput');
 const mobileKeys = document.querySelector('#mobileKeys');
 
@@ -181,6 +184,19 @@ async function api(url, options = {}) {
   const res = await fetch(endpoint, options);
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
   return res;
+}
+
+function setCommandHeight(height, save = false) {
+  const max = Math.max(48, terminalPane.clientHeight - 120);
+  const next = Math.max(48, Math.min(max, height));
+  terminalPane.style.setProperty('--command-height', `${next}px`);
+  if (save) localStorage.setItem(commandHeightKey, String(Math.round(next)));
+  fitTerminal();
+}
+
+function restoreCommandHeight() {
+  const saved = Number(localStorage.getItem(commandHeightKey));
+  setCommandHeight(Number.isFinite(saved) && saved > 0 ? saved : 84);
 }
 
 function fitTerminal(force = false) {
@@ -462,6 +478,27 @@ term.onData((data) => {
 });
 
 terminalFrame.addEventListener('pointerdown', () => focusTerminal(true));
+commandResize.addEventListener('pointerdown', (event) => {
+  event.preventDefault();
+  commandResize.setPointerCapture(event.pointerId);
+  document.body.classList.add('resizingCommand');
+  const resize = (moveEvent) => {
+    const rect = terminalPane.getBoundingClientRect();
+    setCommandHeight(rect.bottom - moveEvent.clientY, true);
+  };
+  const stop = () => {
+    commandResize.removeEventListener('pointermove', resize);
+    document.body.classList.remove('resizingCommand');
+  };
+  commandResize.addEventListener('pointermove', resize);
+  commandResize.addEventListener('pointerup', stop, { once: true });
+  commandResize.addEventListener('pointercancel', stop, { once: true });
+});
+commandResize.addEventListener('keydown', (event) => {
+  if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+  event.preventDefault();
+  setCommandHeight(commandInput.offsetHeight + (event.key === 'ArrowUp' ? 16 : -16), true);
+});
 commandInput.addEventListener('keydown', (event) => {
   if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
   event.preventDefault();
@@ -502,6 +539,7 @@ if (window.ResizeObserver) {
 } else {
   window.addEventListener('resize', fitTerminal);
 }
+window.addEventListener('resize', () => setCommandHeight(commandInput.offsetHeight || 84));
 
 uploadFile.onchange = async () => {
   const file = uploadFile.files[0];
@@ -518,5 +556,6 @@ uploadFile.onchange = async () => {
   }
 };
 
+restoreCommandHeight();
 fitTerminal();
 connect();

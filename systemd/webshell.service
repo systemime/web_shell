@@ -1,6 +1,7 @@
 [Unit]
 Description=Web Shell
-After=network.target
+Requires=webshell-sessiond.service
+After=network.target webshell-sessiond.service
 
 [Service]
 Type=simple

@@ -1,0 +1,15 @@
+[Unit]
+Description=Web Shell Session Daemon
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/project/web_worker
+EnvironmentFile=/etc/webshell.env
+ExecStart=/opt/project/web_worker/webshell sessiond
+KillMode=process
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

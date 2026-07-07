@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -20,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/creack/pty"
@@ -36,12 +38,14 @@ const (
 var idPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
 
 type config struct {
-	host      string
-	port      int
-	root      string
-	maxUpload int64
-	titleFile string
-	workTmp   string
+	host         string
+	port         int
+	root         string
+	maxUpload    int64
+	titleFile    string
+	workTmp      string
+	sessionDir   string
+	sessiondSock string
 }
 
 type appState struct {
@@ -56,13 +60,12 @@ type appState struct {
 type session struct {
 	ID           string
 	Title        string
-	Cmd          *exec.Cmd
-	PTY          *os.File
+	Worker       net.Conn
+	WorkerMu     sync.Mutex
+	SockPath     string
 	Viewer       *client
 	History      []string
 	HistoryBytes int
-	CwdKey       string
-	CwdStop      chan struct{}
 	CreatedAt    int64
 	LastActive   int64
 }
@@ -72,6 +75,34 @@ type sessionInfo struct {
 	Title      string `json:"title"`
 	CreatedAt  int64  `json:"createdAt"`
 	LastActive int64  `json:"lastActive"`
+}
+
+type sessionMeta struct {
+	ID         string `json:"id"`
+	CreatedAt  int64  `json:"createdAt"`
+	LastActive int64  `json:"lastActive"`
+}
+
+type workerMessage struct {
+	Type       string   `json:"type"`
+	Data       string   `json:"data,omitempty"`
+	Cols       int      `json:"cols,omitempty"`
+	Rows       int      `json:"rows,omitempty"`
+	History    []string `json:"history,omitempty"`
+	ExitCode   int      `json:"exitCode,omitempty"`
+	Path       string   `json:"path,omitempty"`
+	Outside    bool     `json:"outside,omitempty"`
+	CreatedAt  int64    `json:"createdAt,omitempty"`
+	LastActive int64    `json:"lastActive,omitempty"`
+}
+
+type daemonMessage struct {
+	Type      string `json:"type"`
+	ID        string `json:"id,omitempty"`
+	Error     string `json:"error,omitempty"`
+	Cols      int    `json:"cols,omitempty"`
+	Rows      int    `json:"rows,omitempty"`
+	CreatedAt int64  `json:"createdAt,omitempty"`
 }
 
 type fileEntry struct {
@@ -98,6 +129,26 @@ type guardedPath struct {
 }
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "session-worker":
+			if err := runSessionWorker(os.Args[2:]); err != nil {
+				log.Fatal(err)
+			}
+			return
+		case "sessiond":
+			cfg, err := newConfig()
+			if err != nil {
+				log.Fatal(err)
+			}
+			if err := runSessionDaemon(cfg); err != nil {
+				log.Fatal(err)
+			}
+			return
+		default:
+			log.Fatalf("unknown command: %s", os.Args[1])
+		}
+	}
 	app, err := newApp()
 	if err != nil {
 		log.Fatal(err)
@@ -107,25 +158,42 @@ func main() {
 	}
 }
 
-func newApp() (*appState, error) {
+func newConfig() (config, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
-		return nil, err
+		return config{}, err
 	}
 	root := getenv("WEB_WORKER_ROOT", cwd)
 	guard, err := newPathGuard(root)
 	if err != nil {
-		return nil, err
+		return config{}, err
 	}
 	cfg := config{
-		host:      getenv("HOST", "127.0.0.1"),
-		port:      intEnv("PORT", 8787),
-		root:      guard.root,
-		maxUpload: int64(intEnv("WEB_WORKER_MAX_UPLOAD_MB", 100)) * 1024 * 1024,
-		titleFile: filepath.Join(cwd, "session-titles.json"),
-		workTmp:   filepath.Join(guard.root, ".web-worker-tmp"),
+		host:         getenv("HOST", "127.0.0.1"),
+		port:         intEnv("PORT", 8787),
+		root:         guard.root,
+		maxUpload:    int64(intEnv("WEB_WORKER_MAX_UPLOAD_MB", 100)) * 1024 * 1024,
+		titleFile:    filepath.Join(cwd, "session-titles.json"),
+		workTmp:      filepath.Join(guard.root, ".web-worker-tmp"),
+		sessionDir:   filepath.Join(cwd, ".web-worker-sessions"),
+		sessiondSock: filepath.Join(cwd, ".web-worker-sessions", "sessiond.sock"),
 	}
 	if err := os.MkdirAll(cfg.workTmp, 0o700); err != nil {
+		return config{}, err
+	}
+	if err := os.MkdirAll(cfg.sessionDir, 0o700); err != nil {
+		return config{}, err
+	}
+	return cfg, nil
+}
+
+func newApp() (*appState, error) {
+	cfg, err := newConfig()
+	if err != nil {
+		return nil, err
+	}
+	guard, err := newPathGuard(cfg.root)
+	if err != nil {
 		return nil, err
 	}
 	_ = os.Setenv("TMPDIR", cfg.workTmp)
@@ -134,6 +202,7 @@ func newApp() (*appState, error) {
 
 	app := &appState{cfg: cfg, guard: guard, sessions: map[string]*session{}, clients: map[*client]bool{}, titles: map[string]string{}}
 	app.loadTitles()
+	app.loadWorkers()
 	return app, nil
 }
 
@@ -414,6 +483,136 @@ func (a *appState) saveTitlesLocked() {
 	_ = os.WriteFile(a.cfg.titleFile, append(b, '\n'), 0o600)
 }
 
+func (a *appState) sessionSock(id string) string {
+	return sessionSockPath(a.cfg.sessionDir, id)
+}
+
+func (a *appState) sessionMetaPath(id string) string {
+	return sessionMetaPath(a.cfg.sessionDir, id)
+}
+
+func sessionSockPath(sessionDir, id string) string {
+	return filepath.Join(sessionDir, id+".sock")
+}
+
+func sessionMetaPath(sessionDir, id string) string {
+	return filepath.Join(sessionDir, id+".json")
+}
+
+func (a *appState) loadWorkers() {
+	files, err := os.ReadDir(a.cfg.sessionDir)
+	if err != nil {
+		return
+	}
+	for _, file := range files {
+		name := file.Name()
+		if file.IsDir() || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		var meta sessionMeta
+		b, err := os.ReadFile(filepath.Join(a.cfg.sessionDir, name))
+		if err != nil || json.Unmarshal(b, &meta) != nil || !idPattern.MatchString(meta.ID) {
+			continue
+		}
+		sock := a.sessionSock(meta.ID)
+		if !pingWorker(sock) {
+			_ = os.Remove(sock)
+			_ = os.Remove(a.sessionMetaPath(meta.ID))
+			continue
+		}
+		a.mu.Lock()
+		s := a.ensureSessionLocked(meta.ID, meta.CreatedAt, meta.LastActive)
+		s.SockPath = sock
+		a.mu.Unlock()
+	}
+}
+
+func dialWorker(sock string) (net.Conn, *json.Encoder, *json.Decoder, error) {
+	conn, err := net.DialTimeout("unix", sock, time.Second)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return conn, json.NewEncoder(conn), json.NewDecoder(conn), nil
+}
+
+func pingWorker(sock string) bool {
+	conn, enc, dec, err := dialWorker(sock)
+	if err != nil {
+		return false
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(time.Second))
+	if enc.Encode(workerMessage{Type: "ping"}) != nil {
+		return false
+	}
+	var msg workerMessage
+	return dec.Decode(&msg) == nil && msg.Type == "pong"
+}
+
+func sendWorker(conn net.Conn, msg workerMessage) error {
+	_ = conn.SetWriteDeadline(time.Now().Add(time.Second))
+	return json.NewEncoder(conn).Encode(msg)
+}
+
+func stopWorker(sock string) {
+	conn, _, _, err := dialWorker(sock)
+	if err != nil {
+		return
+	}
+	_ = sendWorker(conn, workerMessage{Type: "close"})
+	_ = conn.Close()
+}
+
+func dialDaemon(sock string) (net.Conn, *json.Encoder, *json.Decoder, error) {
+	conn, err := net.DialTimeout("unix", sock, time.Second)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return conn, json.NewEncoder(conn), json.NewDecoder(conn), nil
+}
+
+func pingDaemon(sock string) bool {
+	conn, enc, dec, err := dialDaemon(sock)
+	if err != nil {
+		return false
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(time.Second))
+	if enc.Encode(daemonMessage{Type: "ping"}) != nil {
+		return false
+	}
+	var msg daemonMessage
+	return dec.Decode(&msg) == nil && msg.Type == "pong"
+}
+
+func sendDaemonRequest(sock string, req daemonMessage) error {
+	conn, enc, dec, err := dialDaemon(sock)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	if err := enc.Encode(req); err != nil {
+		return err
+	}
+	var msg daemonMessage
+	if err := dec.Decode(&msg); err != nil {
+		return err
+	}
+	if msg.Error != "" {
+		return errors.New(msg.Error)
+	}
+	return nil
+}
+
+func requestSessionStart(cfg config, id string, cols, rows int, createdAt int64) error {
+	return sendDaemonRequest(cfg.sessiondSock, daemonMessage{Type: "start", ID: id, Cols: cols, Rows: rows, CreatedAt: createdAt})
+}
+
+func requestSessionClose(cfg config, id string) error {
+	return sendDaemonRequest(cfg.sessiondSock, daemonMessage{Type: "close", ID: id})
+}
+
 func defaultTitle(id string) string { return "shell " + id[:8] }
 
 func cleanTitle(title string) string {
@@ -523,148 +722,174 @@ func (a *appState) attachSession(c *client, s *session, cols, rows int, quiet bo
 		a.mu.Unlock()
 		return errors.New("Session not found")
 	}
-	if s.Cmd != nil && s.PTY != nil {
-		old := s.Viewer
-		if s.CwdStop != nil {
-			close(s.CwdStop)
-		}
-		stop := make(chan struct{})
-		ptmx := s.PTY
-		s.Viewer = c
-		s.LastActive = time.Now().UnixMilli()
-		s.CwdStop = stop
-		s.CwdKey = ""
-		a.mu.Unlock()
-		_ = pty.Setsize(ptmx, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
-		if old != nil && old != c {
-			old.emit("terminal:detached", map[string]any{"id": s.ID})
-		}
-		go a.startCwdWatch(s.ID, c, stop)
-		return nil
+	id := s.ID
+	createdAt := s.CreatedAt
+	sock := s.SockPath
+	if sock == "" {
+		sock = a.sessionSock(id)
+		s.SockPath = sock
 	}
 	a.mu.Unlock()
 
-	shell := getenv("SHELL", "/bin/bash")
-	cmd := exec.Command(shell)
-	cmd.Dir = a.cfg.root
-	cmd.Env = shellEnv(a.cfg.workTmp, s.ID)
-	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
+	if !pingWorker(sock) {
+		if err := requestSessionStart(a.cfg, id, cols, rows, createdAt); err != nil {
+			return err
+		}
+	}
+	conn, enc, dec, err := dialDaemon(a.cfg.sessiondSock)
 	if err != nil {
 		return err
 	}
+	_ = conn.SetDeadline(time.Now().Add(time.Second))
+	if err := enc.Encode(daemonMessage{Type: "attach", ID: id, Cols: cols, Rows: rows}); err != nil {
+		_ = conn.Close()
+		return err
+	}
+	var hello workerMessage
+	if err := dec.Decode(&hello); err != nil {
+		_ = conn.Close()
+		return err
+	}
+	if hello.Type == "error" {
+		_ = conn.Close()
+		return errors.New(hello.Data)
+	}
+	if hello.Type != "history" {
+		_ = conn.Close()
+		return fmt.Errorf("unexpected sessiond reply: %s", hello.Type)
+	}
+	_ = conn.SetDeadline(time.Time{})
 
 	a.mu.Lock()
-	if s.Viewer != nil {
-		old := a.detachViewerLocked(s, s.Viewer != c)
-		if old != nil {
-			old.emit("terminal:detached", map[string]any{"id": s.ID})
-		}
+	if s == nil || a.sessions[id] != s {
+		a.mu.Unlock()
+		_ = conn.Close()
+		return errors.New("Session not found")
 	}
-	s.History = nil
+	oldViewer, oldWorker := s.Viewer, s.Worker
+	s.History = append([]string(nil), hello.History...)
 	s.HistoryBytes = 0
-	s.Cmd = cmd
-	s.PTY = ptmx
+	for _, chunk := range s.History {
+		s.HistoryBytes += len([]byte(chunk))
+	}
+	s.Worker = conn
 	s.Viewer = c
-	s.LastActive = time.Now().UnixMilli()
-	_ = quiet
-	stop := make(chan struct{})
-	s.CwdStop = stop
-	s.CwdKey = ""
+	if hello.LastActive != 0 {
+		s.LastActive = hello.LastActive
+	} else {
+		s.LastActive = time.Now().UnixMilli()
+	}
 	a.mu.Unlock()
 
-	go a.readPTY(s.ID, cmd, ptmx)
-	go a.startCwdWatch(s.ID, c, stop)
+	if oldWorker != nil && oldWorker != conn {
+		_ = oldWorker.Close()
+	}
+	if oldViewer != nil && oldViewer != c {
+		oldViewer.emit("terminal:detached", map[string]any{"id": id})
+	}
+	_ = quiet
+	go a.readWorker(id, conn, dec)
 	return nil
 }
 
-func (a *appState) releaseViewerLocked(s *session) {
-	if s.CwdStop != nil {
-		close(s.CwdStop)
-		s.CwdStop = nil
+func startSessionWorker(cfg config, id string, cols, rows int, createdAt int64) error {
+	if !idPattern.MatchString(id) {
+		return errors.New("invalid session id")
 	}
-	s.Viewer = nil
-	s.CwdKey = ""
+	sock := sessionSockPath(cfg.sessionDir, id)
+	_ = os.Remove(sock)
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(exe, "session-worker", id, sock, cfg.root, cfg.workTmp, cfg.sessionDir, strconv.Itoa(cols), strconv.Itoa(rows), strconv.FormatInt(createdAt, 10))
+	cmd.Env = shellEnv(cfg.workTmp, id)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go cmd.Wait()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if pingWorker(sock) {
+			return nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return errors.New("session worker did not start")
 }
 
-func (a *appState) detachViewerLocked(s *session, notify bool) *client {
-	viewer := s.Viewer
-	if s.CwdStop != nil {
-		close(s.CwdStop)
-		s.CwdStop = nil
-	}
-	if s.PTY != nil {
-		_ = s.PTY.Close()
-		s.PTY = nil
-	}
-	if s.Cmd != nil && s.Cmd.Process != nil {
-		_ = s.Cmd.Process.Kill()
-	}
-	s.Cmd = nil
-	s.Viewer = nil
-	s.CwdKey = ""
-	if notify {
-		return viewer
-	}
-	return nil
-}
-
-func (a *appState) readPTY(id string, cmd *exec.Cmd, ptmx *os.File) {
-	buf := make([]byte, 8192)
+func (a *appState) readWorker(id string, conn net.Conn, dec *json.Decoder) {
 	for {
-		n, err := ptmx.Read(buf)
-		if n > 0 {
-			data := string(buf[:n])
+		var msg workerMessage
+		if err := dec.Decode(&msg); err != nil {
+			a.mu.Lock()
+			if s := a.sessions[id]; s != nil && s.Worker == conn {
+				s.Worker = nil
+				s.Viewer = nil
+			}
+			a.mu.Unlock()
+			return
+		}
+		switch msg.Type {
+		case "output":
 			var viewer *client
 			a.mu.Lock()
-			if s := a.sessions[id]; s != nil && s.Cmd == cmd {
+			if s := a.sessions[id]; s != nil && s.Worker == conn {
 				s.LastActive = time.Now().UnixMilli()
-				a.rememberLocked(s, data)
+				a.rememberLocked(s, msg.Data)
 				viewer = s.Viewer
 			}
 			a.mu.Unlock()
 			if viewer != nil {
-				viewer.emit("terminal:data", map[string]any{"id": id, "data": data})
+				viewer.emit("terminal:data", map[string]any{"id": id, "data": msg.Data})
 			}
-		}
-		if err != nil {
-			break
+		case "cwd":
+			var viewer *client
+			a.mu.Lock()
+			if s := a.sessions[id]; s != nil && s.Worker == conn {
+				viewer = s.Viewer
+			}
+			a.mu.Unlock()
+			if viewer != nil {
+				viewer.emit("terminal:cwd", map[string]any{"id": id, "path": msg.Path, "outside": msg.Outside})
+			}
+		case "exit":
+			a.finishWorker(id, conn, msg.ExitCode)
+			return
 		}
 	}
-	exitCode := 0
-	if err := cmd.Wait(); err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			exitCode = ee.ExitCode()
-		} else {
-			exitCode = 1
-		}
-	}
-	a.finishPTY(id, cmd, exitCode)
 }
 
-func (a *appState) finishPTY(id string, cmd *exec.Cmd, exitCode int) {
+func (a *appState) finishWorker(id string, conn net.Conn, exitCode int) {
 	var viewer *client
 	a.mu.Lock()
 	s := a.sessions[id]
-	if s == nil || s.Cmd != cmd {
+	if s == nil || s.Worker != conn {
 		a.mu.Unlock()
 		return
 	}
 	viewer = s.Viewer
-	if s.CwdStop != nil {
-		close(s.CwdStop)
-	}
-	s.CwdStop = nil
-	s.Cmd = nil
-	s.PTY = nil
+	s.Worker = nil
 	s.Viewer = nil
 	a.rememberLocked(s, fmt.Sprintf("\r\n[process exited: %d]\r\n", exitCode))
 	delete(a.sessions, id)
 	a.mu.Unlock()
+	_ = conn.Close()
 	if viewer != nil {
 		viewer.emit("terminal:exit", map[string]any{"id": id, "exitCode": exitCode})
 	}
 	a.broadcastSessions()
+}
+
+func (a *appState) releaseViewerLocked(s *session) {
+	if s.Worker != nil {
+		_ = s.Worker.Close()
+		s.Worker = nil
+	}
+	s.Viewer = nil
 }
 
 type cwdInfo struct {
@@ -673,18 +898,430 @@ type cwdInfo struct {
 	Key     string `json:"-"`
 }
 
-func (a *appState) readSessionCwd(id string) *cwdInfo {
-	a.mu.Lock()
-	s := a.sessions[id]
-	pid := 0
-	if s != nil && s.Cmd != nil && s.Cmd.Process != nil {
-		pid = s.Cmd.Process.Pid
+func runSessionDaemon(cfg config) error {
+	_ = os.Remove(cfg.sessiondSock)
+	listener, err := net.Listen("unix", cfg.sessiondSock)
+	if err != nil {
+		return err
 	}
-	a.mu.Unlock()
-	if pid == 0 {
+	defer listener.Close()
+	_ = os.Chmod(cfg.sessiondSock, 0o600)
+	log.Printf("Web worker sessiond: %s", cfg.sessiondSock)
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			return err
+		}
+		go handleSessionDaemonConn(cfg, conn)
+	}
+}
+
+func handleSessionDaemonConn(cfg config, conn net.Conn) {
+	defer conn.Close()
+	dec := json.NewDecoder(conn)
+	enc := json.NewEncoder(conn)
+	var msg daemonMessage
+	if dec.Decode(&msg) != nil {
+		return
+	}
+	switch msg.Type {
+	case "ping":
+		_ = enc.Encode(daemonMessage{Type: "pong"})
+	case "start":
+		err := startSessionWorker(cfg, msg.ID, msg.Cols, msg.Rows, msg.CreatedAt)
+		replyDaemon(enc, err)
+	case "close":
+		if idPattern.MatchString(msg.ID) {
+			stopWorker(sessionSockPath(cfg.sessionDir, msg.ID))
+			_ = os.Remove(sessionSockPath(cfg.sessionDir, msg.ID))
+			_ = os.Remove(sessionMetaPath(cfg.sessionDir, msg.ID))
+		}
+		replyDaemon(enc, nil)
+	case "attach":
+		proxySessionAttach(cfg, conn, dec, enc, msg)
+	default:
+		replyDaemon(enc, fmt.Errorf("unknown sessiond request: %s", msg.Type))
+	}
+}
+
+func replyDaemon(enc *json.Encoder, err error) {
+	reply := daemonMessage{Type: "ok"}
+	if err != nil {
+		reply.Error = err.Error()
+	}
+	_ = enc.Encode(reply)
+}
+
+func proxySessionAttach(cfg config, webConn net.Conn, webDec *json.Decoder, webEnc *json.Encoder, req daemonMessage) {
+	if !idPattern.MatchString(req.ID) {
+		_ = webEnc.Encode(workerMessage{Type: "error", Data: "Invalid session id"})
+		return
+	}
+	workerConn, workerEnc, workerDec, err := dialWorker(sessionSockPath(cfg.sessionDir, req.ID))
+	if err != nil {
+		_ = webEnc.Encode(workerMessage{Type: "error", Data: err.Error()})
+		return
+	}
+	defer workerConn.Close()
+	if err := workerEnc.Encode(workerMessage{Type: "attach", Cols: req.Cols, Rows: req.Rows}); err != nil {
+		_ = webEnc.Encode(workerMessage{Type: "error", Data: err.Error()})
+		return
+	}
+	var hello workerMessage
+	if err := workerDec.Decode(&hello); err != nil {
+		_ = webEnc.Encode(workerMessage{Type: "error", Data: err.Error()})
+		return
+	}
+	if err := webEnc.Encode(hello); err != nil || hello.Type != "history" {
+		return
+	}
+
+	done := make(chan struct{}, 2)
+	go relayWorkerMessages(webDec, workerEnc, done)
+	go relayWorkerMessages(workerDec, webEnc, done)
+	<-done
+}
+
+func relayWorkerMessages(dec *json.Decoder, enc *json.Encoder, done chan<- struct{}) {
+	defer func() { done <- struct{}{} }()
+	for {
+		var msg workerMessage
+		if err := dec.Decode(&msg); err != nil {
+			return
+		}
+		if err := enc.Encode(msg); err != nil {
+			return
+		}
+		if msg.Type == "close" || msg.Type == "exit" {
+			return
+		}
+	}
+}
+
+type sessionWorker struct {
+	id         string
+	sock       string
+	root       string
+	workTmp    string
+	sessionDir string
+	createdAt  int64
+	lastActive int64
+	metaSaved  int64
+	cmd        *exec.Cmd
+	ptmx       *os.File
+	listener   net.Listener
+	done       chan struct{}
+	once       sync.Once
+
+	mu           sync.Mutex
+	client       net.Conn
+	enc          *json.Encoder
+	history      []string
+	historyBytes int
+	cwdKey       string
+}
+
+func runSessionWorker(args []string) error {
+	if len(args) != 8 {
+		return errors.New("bad session worker args")
+	}
+	cols, _ := strconv.Atoi(args[5])
+	rows, _ := strconv.Atoi(args[6])
+	createdAt, _ := strconv.ParseInt(args[7], 10, 64)
+	if cols <= 0 {
+		cols = 100
+	}
+	if rows <= 0 {
+		rows = 30
+	}
+	if createdAt == 0 {
+		createdAt = time.Now().UnixMilli()
+	}
+	w := &sessionWorker{
+		id:         args[0],
+		sock:       args[1],
+		root:       args[2],
+		workTmp:    args[3],
+		sessionDir: args[4],
+		createdAt:  createdAt,
+		lastActive: createdAt,
+		done:       make(chan struct{}),
+	}
+	return w.run(cols, rows)
+}
+
+func (w *sessionWorker) run(cols, rows int) error {
+	if !idPattern.MatchString(w.id) {
+		return errors.New("invalid session id")
+	}
+	if err := os.MkdirAll(w.sessionDir, 0o700); err != nil {
+		return err
+	}
+	shell := getenv("SHELL", "/bin/bash")
+	cmd := exec.Command(shell)
+	cmd.Dir = w.root
+	cmd.Env = shellEnv(w.workTmp, w.id)
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
+	if err != nil {
+		return err
+	}
+	w.cmd, w.ptmx = cmd, ptmx
+
+	_ = os.Remove(w.sock)
+	listener, err := net.Listen("unix", w.sock)
+	if err != nil {
+		_ = ptmx.Close()
+		_ = cmd.Process.Kill()
+		return err
+	}
+	w.listener = listener
+	_ = os.Chmod(w.sock, 0o600)
+	w.saveMeta()
+
+	go w.readPTY()
+	go w.cwdLoop()
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			select {
+			case <-w.done:
+				return nil
+			default:
+				return err
+			}
+		}
+		go w.handleConn(conn)
+	}
+}
+
+func (w *sessionWorker) metaPath() string {
+	return filepath.Join(w.sessionDir, w.id+".json")
+}
+
+func (w *sessionWorker) saveMeta() {
+	meta := sessionMeta{ID: w.id, CreatedAt: w.createdAt, LastActive: w.lastActive}
+	b, _ := json.MarshalIndent(meta, "", "  ")
+	_ = os.WriteFile(w.metaPath(), append(b, '\n'), 0o600)
+	w.metaSaved = w.lastActive
+}
+
+func (w *sessionWorker) touchLocked() {
+	w.lastActive = time.Now().UnixMilli()
+	if w.lastActive-w.metaSaved > 10_000 {
+		w.saveMeta()
+	}
+}
+
+func (w *sessionWorker) handleConn(conn net.Conn) {
+	dec := json.NewDecoder(conn)
+	enc := json.NewEncoder(conn)
+	var msg workerMessage
+	if dec.Decode(&msg) != nil {
+		_ = conn.Close()
+		return
+	}
+	switch msg.Type {
+	case "ping":
+		_ = enc.Encode(workerMessage{Type: "pong"})
+		_ = conn.Close()
+	case "close":
+		w.kill()
+		_ = conn.Close()
+	case "attach":
+		w.attachConn(conn, enc, msg.Cols, msg.Rows)
+		defer func() {
+			w.mu.Lock()
+			if w.client == conn {
+				w.client = nil
+				w.enc = nil
+			}
+			w.mu.Unlock()
+			_ = conn.Close()
+		}()
+		for dec.Decode(&msg) == nil {
+			switch msg.Type {
+			case "input":
+				w.input(msg.Data)
+			case "resize":
+				w.resize(msg.Cols, msg.Rows)
+			case "close":
+				w.kill()
+				return
+			}
+		}
+	default:
+		_ = conn.Close()
+	}
+}
+
+func (w *sessionWorker) attachConn(conn net.Conn, enc *json.Encoder, cols, rows int) {
+	w.mu.Lock()
+	old := w.client
+	w.client = conn
+	w.enc = enc
+	w.cwdKey = ""
+	history := tailHistory(w.history, replayLimit)
+	lastActive := w.lastActive
+	_ = conn.SetWriteDeadline(time.Now().Add(time.Second))
+	_ = enc.Encode(workerMessage{Type: "history", History: history, CreatedAt: w.createdAt, LastActive: lastActive})
+	w.mu.Unlock()
+	if old != nil && old != conn {
+		_ = old.Close()
+	}
+	w.resize(cols, rows)
+	w.pushCwd(true)
+}
+
+func (w *sessionWorker) input(data string) {
+	if data == "" {
+		return
+	}
+	w.mu.Lock()
+	w.touchLocked()
+	ptmx := w.ptmx
+	w.mu.Unlock()
+	if ptmx != nil {
+		_, _ = ptmx.Write([]byte(data))
+	}
+}
+
+func (w *sessionWorker) resize(cols, rows int) {
+	if cols <= 0 {
+		cols = 100
+	}
+	if rows <= 0 {
+		rows = 30
+	}
+	w.mu.Lock()
+	ptmx := w.ptmx
+	w.mu.Unlock()
+	if ptmx != nil {
+		_ = pty.Setsize(ptmx, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
+	}
+}
+
+func (w *sessionWorker) readPTY() {
+	buf := make([]byte, 8192)
+	for {
+		n, err := w.ptmx.Read(buf)
+		if n > 0 {
+			data := string(buf[:n])
+			w.mu.Lock()
+			w.history = append(w.history, data)
+			w.historyBytes += len([]byte(data))
+			for w.historyBytes > historyLimit && len(w.history) > 0 {
+				w.historyBytes -= len([]byte(w.history[0]))
+				w.history = w.history[1:]
+			}
+			w.touchLocked()
+			w.mu.Unlock()
+			w.send(workerMessage{Type: "output", Data: data})
+		}
+		if err != nil {
+			break
+		}
+	}
+	exitCode := 0
+	if err := w.cmd.Wait(); err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			exitCode = ee.ExitCode()
+		} else {
+			exitCode = 1
+		}
+	}
+	w.finish(exitCode)
+}
+
+func (w *sessionWorker) send(msg workerMessage) {
+	w.mu.Lock()
+	conn, enc := w.client, w.enc
+	if conn == nil || enc == nil {
+		w.mu.Unlock()
+		return
+	}
+	_ = conn.SetWriteDeadline(time.Now().Add(time.Second))
+	if err := enc.Encode(msg); err != nil {
+		if w.client == conn {
+			w.client = nil
+			w.enc = nil
+		}
+		_ = conn.Close()
+	}
+	w.mu.Unlock()
+}
+
+func (w *sessionWorker) kill() {
+	w.mu.Lock()
+	ptmx, cmd := w.ptmx, w.cmd
+	w.mu.Unlock()
+	if ptmx != nil {
+		_ = ptmx.Close()
+	}
+	if cmd != nil && cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
+}
+
+func (w *sessionWorker) finish(exitCode int) {
+	w.once.Do(func() {
+		w.send(workerMessage{Type: "exit", ExitCode: exitCode})
+		w.mu.Lock()
+		if w.client != nil {
+			_ = w.client.Close()
+			w.client = nil
+			w.enc = nil
+		}
+		w.mu.Unlock()
+		if w.listener != nil {
+			_ = w.listener.Close()
+		}
+		_ = os.Remove(w.sock)
+		_ = os.Remove(w.metaPath())
+		close(w.done)
+	})
+}
+
+func (w *sessionWorker) cwdLoop() {
+	w.pushCwd(true)
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-w.done:
+			return
+		case <-ticker.C:
+			w.pushCwd(false)
+		}
+	}
+}
+
+func (w *sessionWorker) pushCwd(force bool) {
+	cwd := workerCwd(w.root, w.cmd)
+	if cwd == nil {
+		return
+	}
+	w.mu.Lock()
+	if !force && w.cwdKey == cwd.Key {
+		w.mu.Unlock()
+		return
+	}
+	w.cwdKey = cwd.Key
+	w.mu.Unlock()
+	w.send(workerMessage{Type: "cwd", Path: cwd.Path, Outside: cwd.Outside})
+}
+
+func workerCwd(root string, cmd *exec.Cmd) *cwdInfo {
+	if cmd == nil || cmd.Process == nil {
 		return nil
 	}
-	cwd, err := os.Readlink(fmt.Sprintf("/proc/%d/cwd", pid))
+	cwd, err := os.Readlink(fmt.Sprintf("/proc/%d/cwd", cmd.Process.Pid))
 	if err != nil || cwd == "" {
 		return nil
 	}
@@ -692,40 +1329,14 @@ func (a *appState) readSessionCwd(id string) *cwdInfo {
 	if err != nil {
 		return nil
 	}
-	if !isInside(a.cfg.root, full) {
+	if !isInside(root, full) {
 		return &cwdInfo{Path: "", Outside: true, Key: "outside:" + full}
 	}
-	return &cwdInfo{Path: a.guard.rel(full), Outside: false, Key: full}
-}
-
-func (a *appState) startCwdWatch(id string, c *client, stop <-chan struct{}) {
-	a.pushSessionCwd(id, c, true)
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-stop:
-			return
-		case <-ticker.C:
-			a.pushSessionCwd(id, c, false)
-		}
+	rel, err := filepath.Rel(root, full)
+	if err != nil || rel == "." {
+		return &cwdInfo{Path: "", Key: full}
 	}
-}
-
-func (a *appState) pushSessionCwd(id string, c *client, force bool) {
-	cwd := a.readSessionCwd(id)
-	if cwd == nil {
-		return
-	}
-	a.mu.Lock()
-	s := a.sessions[id]
-	if s == nil || s.Viewer != c || (!force && s.CwdKey == cwd.Key) {
-		a.mu.Unlock()
-		return
-	}
-	s.CwdKey = cwd.Key
-	a.mu.Unlock()
-	c.emit("terminal:cwd", map[string]any{"id": id, "path": cwd.Path, "outside": cwd.Outside})
+	return &cwdInfo{Path: filepath.ToSlash(rel), Key: full}
 }
 
 type client struct {
@@ -917,13 +1528,15 @@ func (a *appState) ownsSession(c *client, id string) bool {
 func (a *appState) writeTerminal(c *client, id, data string) {
 	a.mu.Lock()
 	s := a.sessions[id]
-	ptmx := (*os.File)(nil)
+	var conn net.Conn
 	if s != nil && s.Viewer == c {
-		ptmx = s.PTY
+		conn = s.Worker
 	}
 	a.mu.Unlock()
-	if ptmx != nil && data != "" {
-		_, _ = ptmx.Write([]byte(data))
+	if conn != nil && data != "" {
+		s.WorkerMu.Lock()
+		_ = sendWorker(conn, workerMessage{Type: "input", Data: data})
+		s.WorkerMu.Unlock()
 	}
 }
 
@@ -936,13 +1549,15 @@ func (a *appState) resizeTerminal(c *client, id string, cols, rows int) {
 	}
 	a.mu.Lock()
 	s := a.sessions[id]
-	ptmx := (*os.File)(nil)
+	var conn net.Conn
 	if s != nil && s.Viewer == c {
-		ptmx = s.PTY
+		conn = s.Worker
 	}
 	a.mu.Unlock()
-	if ptmx != nil {
-		_ = pty.Setsize(ptmx, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
+	if conn != nil {
+		s.WorkerMu.Lock()
+		_ = sendWorker(conn, workerMessage{Type: "resize", Cols: cols, Rows: rows})
+		s.WorkerMu.Unlock()
 	}
 }
 
@@ -957,13 +1572,25 @@ func (a *appState) closeSession(id string) bool {
 		return false
 	}
 	viewer := s.Viewer
-	a.detachViewerLocked(s, false)
+	sock := s.SockPath
+	if s.Worker != nil {
+		_ = s.Worker.Close()
+		s.Worker = nil
+	}
+	s.Viewer = nil
 	delete(a.sessions, id)
 	if a.titles[id] != "" {
 		delete(a.titles, id)
 		a.saveTitlesLocked()
 	}
 	a.mu.Unlock()
+	if sock != "" {
+		if err := requestSessionClose(a.cfg, id); err != nil {
+			stopWorker(sock)
+		}
+		_ = os.Remove(sock)
+		_ = os.Remove(a.sessionMetaPath(id))
+	}
 	if viewer != nil {
 		viewer.emit("terminal:exit", map[string]any{"id": id, "exitCode": nil})
 	}

@@ -31,6 +31,11 @@ body {
   font: 14px/1.4 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
+body.resizingCommand {
+  cursor: row-resize;
+  user-select: none;
+}
+
 button,
 .upload,
 .drawerButton,
@@ -78,6 +83,7 @@ button:focus-visible,
 .sessionSelect:focus-visible,
 .shortcutSelect:focus-visible,
 .commandInput:focus-visible,
+.commandResize:focus-visible,
 .mobileKeys button:focus-visible,
 .row:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent), transparent 20%);
@@ -341,19 +347,19 @@ button:focus-visible,
 }
 
 .terminalPane {
+  --command-height: 84px;
   flex: 1 1 0;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) 10px minmax(48px, var(--command-height));
   min-height: 0;
+  padding: clamp(12px, 1.3vw, 18px);
   overflow: hidden;
 }
 
 .terminalFrame {
-  flex: 1 1 0;
   display: flex;
   flex-direction: column;
   min-height: 0;
-  margin: clamp(12px, 1.3vw, 18px) clamp(12px, 1.3vw, 18px) 8px;
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -361,19 +367,41 @@ button:focus-visible,
   overflow: hidden;
 }
 
+.commandResize {
+  min-height: 10px;
+  cursor: row-resize;
+  touch-action: none;
+  position: relative;
+}
+
+.commandResize::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 4px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--line);
+}
+
+.commandResize:hover::before,
+.resizingCommand .commandResize::before {
+  background: color-mix(in srgb, var(--accent), transparent 20%);
+}
+
 .commandDock {
-  flex: 0 0 auto;
-  padding: 8px clamp(12px, 1.3vw, 18px) clamp(12px, 1.3vw, 18px);
-  border-top: 1px solid var(--line);
+  min-height: 0;
+  display: flex;
+  padding: 0;
   background: var(--bg);
 }
 
 .commandInput {
   display: block;
   width: 100%;
+  height: 100%;
   min-height: 48px;
-  max-height: 35dvh;
-  height: auto;
   margin: 0;
   padding: 9px 10px;
   border: 1px solid var(--line);
@@ -381,7 +409,7 @@ button:focus-visible,
   background: var(--panel2);
   color: var(--text);
   font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  resize: vertical;
+  resize: none;
   caret-color: var(--accent);
   outline: 0;
   white-space: pre-wrap;
@@ -482,13 +510,13 @@ button:focus-visible,
     font-size: 12px;
   }
 
-  .terminalFrame {
-    margin: 10px 10px 8px;
-    padding: 8px;
+  .terminalPane {
+    padding: 10px;
+    --command-height: 76px;
   }
 
-  .commandDock {
-    padding: 8px 10px 10px;
+  .terminalFrame {
+    padding: 8px;
   }
 
   .tree {
@@ -575,15 +603,20 @@ button:focus-visible,
     padding: 0 8px;
   }
 
+  .terminalPane {
+    padding: 0;
+    grid-template-rows: minmax(0, 1fr) 8px minmax(42px, var(--command-height));
+    --command-height: 72px;
+  }
+
   .terminalFrame {
-    margin: 0;
     padding: 4px 2px 2px 4px;
     border: 0;
     border-radius: 0;
   }
 
-  .commandDock {
-    padding: 0;
+  .commandResize {
+    min-height: 8px;
     border-top: 1px solid var(--line);
   }
 

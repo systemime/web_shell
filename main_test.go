@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPathGuardRejectsTraversalAndSymlinkEscape(t *testing.T) {
@@ -79,6 +80,146 @@ func TestTailHistoryKeepsRecentChunks(t *testing.T) {
 	if strings.Join(history, ":") != "middle:new" {
 		t.Fatalf("history = %#v", history)
 	}
+}
+
+func TestSessionWorkerProtocol(t *testing.T) {
+	t.Setenv("SHELL", "/bin/sh")
+	id := "0123456789abcdef0123456789abcdef"
+	root := t.TempDir()
+	workTmp := t.TempDir()
+	sessionDir := shortTempDir(t)
+	sock := filepath.Join(sessionDir, id+".sock")
+	done := make(chan error, 1)
+	go func() {
+		done <- runSessionWorker([]string{id, sock, root, workTmp, sessionDir, "80", "24", "1"})
+	}()
+	for deadline := time.Now().Add(3 * time.Second); !pingWorker(sock); {
+		select {
+		case err := <-done:
+			t.Fatalf("worker exited: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("worker did not start")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Cleanup(func() { stopWorker(sock) })
+
+	conn, enc, dec, err := dialWorker(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+	if err := enc.Encode(workerMessage{Type: "attach", Cols: 80, Rows: 24}); err != nil {
+		t.Fatal(err)
+	}
+	var msg workerMessage
+	if err := dec.Decode(&msg); err != nil || msg.Type != "history" {
+		t.Fatalf("history reply = %#v, %v", msg, err)
+	}
+	if err := enc.Encode(workerMessage{Type: "input", Data: "echo worker-ok\r"}); err != nil {
+		t.Fatal(err)
+	}
+	output := ""
+	for !strings.Contains(output, "worker-ok") {
+		if err := dec.Decode(&msg); err != nil {
+			t.Fatal(err)
+		}
+		if msg.Type == "output" {
+			output += msg.Data
+		}
+	}
+	if err := enc.Encode(workerMessage{Type: "close"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("worker did not stop")
+	}
+}
+
+func TestSessionDaemonStartsAndProxiesWorker(t *testing.T) {
+	t.Setenv("SHELL", "/bin/sh")
+	sessionDir := shortTempDir(t)
+	cfg := config{
+		root:         t.TempDir(),
+		workTmp:      t.TempDir(),
+		sessionDir:   sessionDir,
+		sessiondSock: filepath.Join(sessionDir, "sessiond.sock"),
+	}
+	errs := make(chan error, 1)
+	go func() { errs <- runSessionDaemon(cfg) }()
+	for deadline := time.Now().Add(3 * time.Second); !pingDaemon(cfg.sessiondSock); {
+		if time.Now().After(deadline) {
+			select {
+			case err := <-errs:
+				t.Fatalf("sessiond exited: %v", err)
+			default:
+				t.Fatal("sessiond did not start")
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	id := "fedcba9876543210fedcba9876543210"
+	sock := sessionSockPath(sessionDir, id)
+	workerDone := make(chan error, 1)
+	go func() {
+		workerDone <- runSessionWorker([]string{id, sock, cfg.root, cfg.workTmp, sessionDir, "80", "24", "1"})
+	}()
+	for deadline := time.Now().Add(3 * time.Second); !pingWorker(sock); {
+		select {
+		case err := <-workerDone:
+			t.Fatalf("worker exited: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("worker did not start")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	conn, enc, dec, err := dialDaemon(cfg.sessiondSock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+	if err := enc.Encode(daemonMessage{Type: "attach", ID: id, Cols: 80, Rows: 24}); err != nil {
+		t.Fatal(err)
+	}
+	var msg workerMessage
+	if err := dec.Decode(&msg); err != nil || msg.Type != "history" {
+		t.Fatalf("history reply = %#v, %v", msg, err)
+	}
+	if err := enc.Encode(workerMessage{Type: "input", Data: "echo sessiond-ok\r"}); err != nil {
+		t.Fatal(err)
+	}
+	output := ""
+	for !strings.Contains(output, "sessiond-ok") {
+		if err := dec.Decode(&msg); err != nil {
+			t.Fatal(err)
+		}
+		if msg.Type == "output" {
+			output += msg.Data
+		}
+	}
+	_ = enc.Encode(workerMessage{Type: "close"})
+}
+
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "ww-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
 }
 
 func TestShellEnvFillsEmptyHome(t *testing.T) {

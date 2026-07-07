@@ -3,8 +3,10 @@ node_modules/
 npm-debug.log*
 session-titles.json
 .web-worker-tmp/
+.web-worker-sessions/
 .gitnexus/
 test-results/
+dist/
 openresty/auth/
 openresty/certs/
 openresty/logs/
